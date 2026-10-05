@@ -6,7 +6,6 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from app.api.router import api_router
 from app.config import settings
@@ -75,20 +74,17 @@ def index():
     return FileResponse(page)
 
 
-@app.get("/styles.css", include_in_schema=False)
-def styles():
-    return FileResponse(_frontend() / "styles.css")
-
-
-@app.get("/app.js", include_in_schema=False)
-def application_script():
-    return FileResponse(_frontend() / "app.js")
-
-
-def _mount_frontend() -> None:
-    modules = _frontend() / "modules"
-    if modules.exists():
-        app.mount("/modules", StaticFiles(directory=modules), name="modules")
-
-
-_mount_frontend()
+@app.get("/{full_path:path}", include_in_schema=False)
+def frontend_asset(full_path: str):
+    if full_path == "api" or full_path.startswith("api/"):
+        return JSONResponse({"detail": "Не найдено"}, status_code=404)
+    root = _frontend().resolve()
+    candidate = (root / full_path).resolve()
+    if not candidate.is_relative_to(root):
+        return JSONResponse({"detail": "Не найдено"}, status_code=404)
+    if candidate.is_file():
+        return FileResponse(candidate)
+    index_page = root / "index.html"
+    if index_page.exists() and "." not in Path(full_path).name:
+        return FileResponse(index_page)
+    return JSONResponse({"detail": "Не найдено"}, status_code=404)

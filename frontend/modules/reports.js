@@ -1,145 +1,134 @@
-import { api, download } from "./api.js";
-import { allow, loadExcavations, state } from "./context.js";
-import { esc, field, options, setStatus } from "./ui.js";
+import { html, useState } from "./html.js";
+import { useQuery } from "../hooks/useQuery.js";
+import { dictionariesApi, excavationsApi, layersApi, reportsApi } from "../services/api.js";
+import { useSession } from "./session.js";
+import { useWorkspace } from "./workspace.js";
+import { useStatus } from "./status.js";
+import { COLUMN_LABELS, EXTENDED_COLUMNS, MINIMAL_COLUMNS, allow } from "./labels.js";
+import { Breadcrumbs, ErrorText, Field, SectionHeading } from "./ui.js";
 
-const COLUMNS = [
-  ["code", "Код"], ["number", "Номер"], ["excavation", "Раскоп"], ["layer", "Пласт"], ["square", "Квадрат"],
-  ["material", "Материал"], ["north", "North"], ["east", "East"], ["elev", "Elev"],
-  ["length_mm", "Длина"], ["width_mm", "Ширина"], ["thickness_mm", "Толщина"],
-  ["description", "Описание"], ["find_type", "Тип находки"], ["quantity", "Количество"],
-  ["measurement_method", "Способ измерения"], ["photo_present", "Фото"], ["note", "Примечание"],
-  ["vessel_part", "Часть сосуда"], ["ornament", "Орнамент"],
-];
-const MINIMAL = ["code", "number", "excavation", "layer", "square", "material", "north", "east", "elev", "length_mm", "width_mm", "thickness_mm"];
+const COLUMNS = Object.entries(COLUMN_LABELS);
 
-export async function renderReports(root) {
-  const excavations = await loadExcavations();
-  const dictionaries = await api("/api/dictionaries");
-  const layers = state.excavationId ? await api(`/api/layers?excavation_id=${state.excavationId}`) : [];
-  const templates = await api("/api/reports/templates");
-  root.innerHTML = `
-    <section class="panel stack">
-      <h2>Отчёты</h2>
-      <form id="report-form" class="stack">
-        <div class="filters">
-          ${field("Раскоп", `<select name="excavation_id">${options(excavations, state.excavationId, (item) => item.id, (item) => `${item.code} (${item.year})`, "Все")}</select>`)}
-          ${field("Пласт", `<select name="layer_id">${options(layers, state.layerId, (item) => item.id, (item) => `Пласт ${item.number}`, "Все")}</select>`)}
-          ${field("Квадрат", `<input name="square">`)}
-          ${field("Материал", `<select name="material">${options(dictionaries.materials, "", (item) => item.name, (item) => item.name, "Все")}</select>`)}
-          ${field("Тип находки", `<input name="find_type">`)}
-          ${field("Способ", `<select name="measurement_method"><option value="">Все</option><option value="photo">по фото</option><option value="manual">ручное</option><option value="none">не указан</option></select>`)}
-          ${field("Номер от", `<input name="number_from" type="number">`)}
-          ${field("Номер до", `<input name="number_to" type="number">`)}
-          ${field("Elev от", `<input name="elev_from" type="number" step="0.001">`)}
-          ${field("Elev до", `<input name="elev_to" type="number" step="0.001">`)}
-          ${field("Сортировка", `<select name="sort"><option value="number">по номеру</option><option value="square">по квадрату</option><option value="layer">по пласту</option><option value="combined">пласт, квадрат, номер</option><option value="code">по коду</option></select>`)}
-        </div>
-        <div class="actions" id="columns">${COLUMNS.map(([key, label]) => `<label class="badge"><input type="checkbox" name="columns" value="${key}" ${MINIMAL.includes(key) ? "checked" : ""}> ${label}</label>`).join("")}</div>
-        <div class="actions">
-          <button class="btn btn-ghost" type="button" id="preset-min">Минимальная опись</button>
-          <button class="btn btn-ghost" type="button" id="preset-ext">Расширенная опись</button>
-          <button class="btn btn-primary" type="submit">Предпросмотр</button>
-          <button class="btn btn-ghost" id="xlsx" type="button">Excel</button>
-          <button class="btn btn-ghost" id="pdf" type="button">PDF</button>
-          <button class="btn btn-ghost" id="print" type="button">Печать</button>
-        </div>
-        <div class="actions">
-          <input id="template-name" placeholder="Имя шаблона, например Раскоп 1 - полная опись">
-          <button class="btn btn-ghost" id="save-template" type="button">Сохранить шаблон</button>
-          <select id="templates">${options(templates, "", (item) => item.id, (item) => item.name, "Шаблоны")}</select>
-          <button class="btn btn-ghost" id="apply-template" type="button">Применить</button>
-        </div>
-      </form>
-      <div id="preview"></div>
-    </section>`;
-  const form = document.getElementById("report-form");
-  const bodyFromForm = () => {
-    const data = new FormData(form);
-    const columns = data.getAll("columns");
-    const payload = {
-      excavation_id: data.get("excavation_id") ? Number(data.get("excavation_id")) : null,
-      layer_id: data.get("layer_id") ? Number(data.get("layer_id")) : null,
-      square: data.get("square") || null,
-      material: data.get("material") || null,
-      find_type: data.get("find_type") || null,
-      measurement_method: data.get("measurement_method") || null,
-      number_from: data.get("number_from") ? Number(data.get("number_from")) : null,
-      number_to: data.get("number_to") ? Number(data.get("number_to")) : null,
-      elev_from: data.get("elev_from") ? Number(data.get("elev_from")) : null,
-      elev_to: data.get("elev_to") ? Number(data.get("elev_to")) : null,
-      sort: data.get("sort") || "combined",
-      order: "asc",
-      columns,
-    };
-    return payload;
+export function ReportsPage() {
+  const { user } = useSession();
+  const workspace = useWorkspace();
+  const { setStatus } = useStatus();
+  const [columns, setColumns] = useState(MINIMAL_COLUMNS);
+  const [preview, setPreview] = useState(null);
+  const [title, setTitle] = useState("Полевая опись");
+  const excavations = useQuery(() => excavationsApi.list(), []);
+  const dictionaries = useQuery(() => dictionariesApi.list(), []);
+  const templates = useQuery(() => reportsApi.templates(), []);
+  const reports = useQuery(() => reportsApi.list(), []);
+  const [excavationId, setExcavationId] = useState(workspace.excavationId);
+  const layers = useQuery(() => (excavationId ? layersApi.list(excavationId) : Promise.resolve([])), [excavationId]);
+
+  const payloadFrom = (form) => {
+    const data = Object.fromEntries(new FormData(form).entries());
+    Object.keys(data).forEach((key) => { if (data[key] === "") delete data[key]; });
+    return { ...data, columns, title, preset: columns.join() === EXTENDED_COLUMNS.join() ? "extended" : "minimal" };
   };
-  const setColumns = (keys) => {
-    form.querySelectorAll("input[name=columns]").forEach((input) => { input.checked = keys.includes(input.value); });
-  };
-  document.getElementById("preset-min").onclick = () => setColumns(MINIMAL);
-  document.getElementById("preset-ext").onclick = () => setColumns(COLUMNS.map(([key]) => key));
-  form.addEventListener("submit", async (event) => {
+
+  const build = async (event) => {
     event.preventDefault();
-    setStatus("Формирование предпросмотра…");
     try {
-      const preview = await api("/api/reports/findings", { method: "POST", body: bodyFromForm() });
-      document.getElementById("preview").innerHTML = `<iframe title="Предпросмотр описи" style="width:100%;min-height:480px;border:1px solid #d9d0c3;background:white"></iframe>`;
-      document.querySelector("#preview iframe").srcdoc = preview.html;
-      setStatus(`В выборке ${preview.total} записей`, "ok");
-    } catch (error) { setStatus(error.message, "error"); }
-  });
-  document.getElementById("xlsx").onclick = () => exportFile("xlsx");
-  document.getElementById("pdf").onclick = () => exportFile("pdf");
-  document.getElementById("print").onclick = async () => {
-    try {
-      const html = await api("/api/reports/print", { method: "POST", body: bodyFromForm() });
-      const popup = window.open("", "_blank");
-      if (!popup) { setStatus("Разрешите всплывающие окна для печати", "warn"); return; }
-      popup.document.write(html);
-      popup.document.close();
-      popup.focus();
-      popup.print();
-    } catch (error) { setStatus(error.message, "error"); }
-  };
-  document.getElementById("save-template").onclick = async () => {
-    const name = document.getElementById("template-name").value.trim();
-    if (!name) { setStatus("Укажите имя шаблона", "warn"); return; }
-    const filters = bodyFromForm();
-    try {
-      await api("/api/reports/templates", { method: "POST", body: { name, filters, columns: filters.columns, sort: { sort: filters.sort, order: filters.order } } });
-      setStatus("Шаблон сохранён", "ok");
-      renderReports(root);
-    } catch (error) { setStatus(error.message, "error"); }
-  };
-  document.getElementById("apply-template").onclick = () => {
-    const id = document.getElementById("templates").value;
-    const template = templates.find((item) => String(item.id) === id);
-    if (!template) return;
-    const filters = template.filters || {};
-    for (const [key, value] of Object.entries(filters)) {
-      const input = form.elements.namedItem(key);
-      if (input && key !== "columns" && value !== null && value !== undefined) input.value = value;
+      const data = await reportsApi.preview(payloadFrom(event.target));
+      setPreview(data);
+      setStatus(`В описи ${data.total} записей`, "ok");
+    } catch (error) {
+      setStatus(error.message, "error");
     }
-    if (template.columns?.length) setColumns(template.columns);
-    if (template.sort?.sort) form.elements.sort.value = template.sort.sort;
-    setStatus(`Применён шаблон «${template.name}»`, "ok");
   };
-  async function exportFile(format) {
-    setStatus(`Экспорт ${format.toUpperCase()}…`);
+
+  const run = async (format) => {
+    const form = document.getElementById("report-form");
+    const body = { ...payloadFrom(form), format };
     try {
-      await download("/api/reports/export", { ...bodyFromForm(), format }, `opis.${format}`);
-      setStatus("Файл сформирован", "ok");
-    } catch (error) { setStatus(error.message, "error"); }
-  }
-  if (allow(3)) {
-    const reports = await api("/api/reports");
-    const box = document.createElement("div");
-    box.innerHTML = `<h3>Подтверждение отчётов</h3>` + reports.map((item) => `<p>${esc(item.title)} · ${esc(item.format)} · ${esc(item.status)} ${item.status !== "confirmed" ? `<button class="btn btn-ghost" data-confirm="${item.id}" type="button">Подтвердить</button>` : ""}</p>`).join("");
-    root.querySelector("section").append(box);
-    box.querySelectorAll("[data-confirm]").forEach((button) => button.addEventListener("click", async () => {
-      await api(`/api/reports/${button.dataset.confirm}/confirm`, { method: "POST" });
-      setStatus("Отчёт подтверждён", "ok");
-      renderReports(root);
-    }));
-  }
+      if (format === "print") {
+        await reportsApi.print(body);
+        setStatus("Печать открыта", "ok");
+        return;
+      }
+      const reportId = await reportsApi.exportFile(body);
+      if (format === "pdf" && reportId?.preview) await reportsApi.print({ ...body, title });
+      setStatus(format === "pdf" && reportId?.preview ? "PDF открыт через печать" : format === "pdf" ? "Файл PDF сохранён" : "Файл Excel сохранён", "ok");
+      reports.reload();
+    } catch (error) {
+      setStatus(error.message, "error");
+    }
+  };
+
+  return html`<section>
+    <${Breadcrumbs} items=${[{ label: "Опись", href: "/inventory" }, { label: "Отчёты" }]} />
+    <${SectionHeading}>Отчёты<//>
+    ${allow(user, 2) ? null : html`<p>Выгружать описи могут камеральный сотрудник и руководитель.</p>`}
+    <form id="report-form" className="stack" onSubmit=${build}>
+      <div className="filter-grid">
+        <${Field} label="Раскоп"><select name="excavation_id" value=${excavationId} onChange=${(event) => setExcavationId(event.target.value)}>
+          <option value="">Все</option>
+          ${(excavations.data || []).map((item) => html`<option key=${item.id} value=${item.id}>${item.code} (${item.year})</option>`)}
+        </select></${Field}>
+        <${Field} label="Пласт"><select name="layer_id" defaultValue=${workspace.layerId}>
+          <option value="">Все</option>
+          ${(layers.data || []).map((item) => html`<option key=${item.id} value=${item.id}>Пласт ${item.number}</option>`)}
+        </select></${Field}>
+        <${Field} label="Квадрат"><input name="square" /></${Field}>
+        <${Field} label="Материал"><select name="material">
+          <option value="">Все</option>
+          ${(dictionaries.data?.materials || []).map((item) => html`<option key=${item.id} value=${item.name}>${item.name}</option>`)}
+        </select></${Field}>
+        <${Field} label="Тип находки"><input name="find_type" /></${Field}>
+        <${Field} label="Способ"><select name="measurement_method"><option value="">Все</option><option value="photo">по фото</option><option value="manual">ручное</option><option value="none">не указан</option></select></${Field}>
+        <${Field} label="Номер от"><input name="number_from" type="number" /></${Field}>
+        <${Field} label="Номер до"><input name="number_to" type="number" /></${Field}>
+        <${Field} label="Elev от"><input name="elev_from" type="number" step="0.001" /></${Field}>
+        <${Field} label="Elev до"><input name="elev_to" type="number" step="0.001" /></${Field}>
+        <${Field} label="Сортировка"><select name="sort"><option value="number">по номеру</option><option value="square">по квадрату</option><option value="layer">по пласту</option><option value="code">по коду</option></select></${Field}>
+        <${Field} label="Заголовок"><input value=${title} onInput=${(event) => setTitle(event.target.value)} /></${Field}>
+      </div>
+      <div className="actions">
+        <button type="button" className="btn btn-line" onClick=${() => setColumns(MINIMAL_COLUMNS)}>Минимальная опись</button>
+        <button type="button" className="btn btn-line" onClick=${() => setColumns(EXTENDED_COLUMNS)}>Расширенная опись</button>
+        ${(templates.data || []).map((item) => html`<button type="button" key=${item.id} className="btn btn-text" onClick=${() => setColumns(item.columns)}>${item.name}</button>`)}
+      </div>
+      <div className="checks">
+        ${COLUMNS.map(([key, label]) => html`<label key=${key} className="check"><input type="checkbox" checked=${columns.includes(key)} onChange=${(event) => setColumns((current) => event.target.checked ? current.concat(key) : current.filter((item) => item !== key))} /> ${label}</label>`)}
+      </div>
+      <div className="actions">
+        <button className="btn btn-gold" type="submit">Показать</button>
+        <button type="button" className="btn btn-line" onClick=${() => run("xlsx")}>Excel</button>
+        <button type="button" className="btn btn-line" onClick=${() => run("pdf")}>PDF</button>
+        <button type="button" className="btn btn-line" onClick=${() => run("print")}>Печать</button>
+        <button type="button" className="btn btn-text" onClick=${async () => {
+          const name = window.prompt("Название шаблона");
+          if (!name) return;
+          const form = document.getElementById("report-form");
+          await reportsApi.saveTemplate({ name, filters: payloadFrom(form), columns, sort: { sort: "number", order: "asc" } });
+          templates.reload();
+          setStatus("Шаблон сохранён", "ok");
+        }}>Сохранить шаблон</button>
+      </div>
+    </form>
+    <${ErrorText} error=${reports.error} />
+    ${preview ? html`<div className="table-wrap"><table>
+      <thead><tr>${preview.columns.map((column) => html`<th key=${column.key}>${column.label}</th>`)}</tr></thead>
+      <tbody>${preview.rows.map((row, index) => {
+        const cells = Array.isArray(row) ? row : row.cells;
+        const key = row.id ?? index;
+        return html`<tr key=${key}>${cells.map((cell, cellIndex) => html`<td key=${cellIndex}>${cell}</td>`)}</tr>`;
+      })}</tbody>
+    </table></div>` : null}
+    <h3 className="subhead">Сформированные описи</h3>
+    <div className="table-wrap"><table>
+      <thead><tr><th>№</th><th>Название</th><th>Формат</th><th>Записей</th><th>Статус</th><th></th></tr></thead>
+      <tbody>
+        ${(reports.data || []).map((item) => html`<tr key=${item.id}>
+          <td>${item.id}</td><td>${item.title}</td><td>${item.format}</td>          <td>${item.total ?? "—"}</td>
+          <td>${item.confirmed || item.status === "confirmed" ? "подтверждена" : "черновик"}</td>
+          <td>${allow(user, 3) && !(item.confirmed || item.status === "confirmed") ? html`<button type="button" className="btn btn-text" onClick=${async () => { await reportsApi.confirm(item.id); setStatus("Опись подтверждена", "ok"); reports.reload(); }}>Подтвердить</button>` : null}</td>
+        </tr>`)}
+        ${!(reports.data || []).length ? html`<tr><td colspan="6">Описей ещё нет. Excel и PDF создают запись, которую подтверждает руководитель.</td></tr>` : null}
+      </tbody>
+    </table></div>
+  </section>`;
 }

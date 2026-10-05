@@ -16,6 +16,14 @@ docker compose up --build
 - API: http://localhost:8000/api
 - Swagger: http://localhost:8000/docs
 
+Панель Stagewise (расширение IDE Bridge) подключается отдельной командой, когда сервер уже запущен. Нужен Node.js. Из корня проекта:
+
+```bash
+npm run stagewise
+```
+
+Панель открывается на http://localhost:3100 и проксирует интерфейс с порта 8000. Выбранный элемент уходит в агент Cursor. Версия CLI зафиксирована на 0.11.1: команда `npx stagewise@latest` сейчас только предлагает скачать отдельное приложение и панель не поднимает.
+
 Остановка: `docker compose down`. Данные базы сохраняются в томе `pgdata`.
 
 Параметры окружения описаны в `backend/.env.example`. В Compose они уже заданы: база `archaeology` / `archaeology`, PostGIS 16, порт API `8000`, порт PostgreSQL `5432`.

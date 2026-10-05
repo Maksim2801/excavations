@@ -1,120 +1,131 @@
-import { api } from "./api.js";
-import { allow, loadExcavations, navigate, setExcavation, setLayer, state } from "./context.js";
-import { esc, field, fmt, issues, METHOD_LABELS, options, setStatus } from "./ui.js";
+import { html, useMemo, useState } from "./html.js";
+import { useQuery } from "../hooks/useQuery.js";
+import { dictionariesApi, excavationsApi, findingsApi, layersApi } from "../services/api.js";
+import { useSession } from "./session.js";
+import { useRouter } from "./router.js";
+import { useWorkspace } from "./workspace.js";
+import { useStatus } from "./status.js";
+import { METHOD_LABELS, allow, fmt, issueText } from "./labels.js";
+import { Breadcrumbs, ConfirmDialog, ErrorText, Field, Pagination, SectionHeading } from "./ui.js";
 
-const SORTS = [
-  ["code", "Код"], ["number", "Номер"], ["north", "North"], ["east", "East"], ["elev", "Elev"],
-  ["length_mm", "Длина"], ["width_mm", "Ширина"], ["thickness_mm", "Толщина"],
-];
+const SORTS = [["code", "Код"], ["number", "Номер"], ["north", "North"], ["east", "East"], ["elev", "Elev"], ["length_mm", "Длина"], ["width_mm", "Ширина"], ["thickness_mm", "Толщина"]];
 
-export async function renderInventory(root) {
-  const excavations = await loadExcavations();
-  const excavationId = state.excavationId || "";
-  const layers = excavationId ? await api(`/api/layers?excavation_id=${excavationId}`) : [];
-  const dictionaries = await api("/api/dictionaries");
-  root.innerHTML = `
-    <section class="panel stack">
-      <div class="actions">
-        <h2>Опись</h2>
-        <button class="btn btn-primary" id="new-finding" type="button">Новая находка</button>
-        ${allow(2) ? `<button class="btn btn-ghost" id="to-reports" type="button">Экспорт</button>` : ""}
-      </div>
-      <form id="filters" class="filters">
-        ${field("Раскоп", `<select name="excavation_id">${options(excavations, excavationId, (item) => item.id, (item) => `${item.code} (${item.year})`, "Все")}</select>`)}
-        ${field("Пласт", `<select name="layer_id">${options(layers, state.layerId, (item) => item.id, (item) => `Пласт ${item.number}`, "Все")}</select>`)}
-        ${field("Поиск", `<input name="q" placeholder="код, описание, квадрат">`)}
-        ${field("Код", `<input name="code">`)}
-        ${field("Материал", `<select name="material">${options(dictionaries.materials.filter((item) => item.is_active), "", (item) => item.name, (item) => item.name, "Все")}</select>`)}
-        ${field("Квадрат", `<input name="square">`)}
-        ${field("Способ", `<select name="measurement_method">${options([{id:"photo",name:"по фото"},{id:"manual",name:"ручное"},{id:"none",name:"не указан"}], "", (item) => item.id, (item) => item.name, "Все")}</select>`)}
-        ${field("Фото", `<select name="photo_present"><option value="">Все</option><option value="true">Есть</option><option value="false">Нет</option></select>`)}
-        ${field("Номер от", `<input name="number_from" type="number">`)}
-        ${field("Номер до", `<input name="number_to" type="number">`)}
-        ${field("Elev от", `<input name="elev_from" type="number" step="0.001">`)}
-        ${field("Elev до", `<input name="elev_to" type="number" step="0.001">`)}
-        <div class="actions"><button class="btn btn-primary" type="submit">Фильтр</button><button class="btn btn-ghost" id="reset" type="button">Сбросить</button></div>
-      </form>
-      <div class="table-wrap"><table><thead><tr>
-        <th data-sort="code">Код</th><th>Раскоп</th><th data-sort="layer">Пласт</th>
-        ${SORTS.filter(([key]) => key !== "code").map(([key, label]) => `<th data-sort="${key}">${label}</th>`).join("")}
-        <th>Способ измерения</th><th>Фото</th><th>Замечания</th><th></th>
-      </tr></thead><tbody id="rows"></tbody></table></div>
-      <div class="pager"><button class="btn btn-ghost" id="prev" type="button">Назад</button><span id="page"></span><button class="btn btn-ghost" id="next" type="button">Дальше</button></div>
-    </section>`;
-  let page = 1;
-  let sort = "code";
-  let order = "asc";
-  const load = async () => {
-    const params = new URLSearchParams(new FormData(document.getElementById("filters")));
-    for (const [key, value] of [...params.entries()]) if (!value) params.delete(key);
-    params.set("page", String(page));
-    params.set("page_size", "50");
-    params.set("sort", sort);
-    params.set("order", order);
-    setStatus("Загрузка описи…");
-    const data = await api(`/api/findings?${params.toString()}`);
-    document.getElementById("rows").innerHTML = data.items.map((item) => `
-      <tr class="${item.issues?.length ? "problem" : ""}">
-        <td>${esc(item.code)}</td><td>${esc(item.excavation_code || "")}</td><td>${item.layer_number ?? "-"}</td><td>${item.number}</td>
-        <td>${fmt(item.north)}</td><td>${fmt(item.east)}</td><td>${fmt(item.elev)}</td>
-        <td>${fmt(item.length_mm, 1)}</td><td>${fmt(item.width_mm, 1)}</td><td>${fmt(item.thickness_mm, 1)}</td>
-        <td>${esc(METHOD_LABELS[item.measurement_method] || item.measurement_method)}</td>
-        <td>${item.photo_present ? "да" : "нет"}</td>
-        <td>${item.issues?.length ? `<span class="badge warn">${esc(issues(item.issues))}</span>` : ""}</td>
-        <td class="actions">
-          <button class="btn btn-ghost" data-open="${item.id}" type="button">Карточка</button>
-          <button class="btn btn-ghost" data-photo="${item.id}" type="button">Фото</button>
-          <button class="btn btn-ghost" data-plan="${item.id}" data-excavation="${item.excavation_id}" data-layer="${item.layer_id || ""}" type="button">План</button>
-          ${allow(2) ? `<button class="btn btn-danger" data-delete="${item.id}" type="button">Удалить</button>` : ""}
-        </td>
-      </tr>`).join("") || `<tr><td colspan="12">Записей нет</td></tr>`;
-    document.getElementById("page").textContent = `Стр. ${data.page}, всего ${data.total}`;
-    document.getElementById("rows").querySelectorAll("button").forEach((button) => {
-      button.addEventListener("click", async () => {
-        if (button.dataset.open) navigate(`/finding/${button.dataset.open}`);
-        if (button.dataset.photo) navigate(`/photo/${button.dataset.photo}`);
-        if (button.dataset.plan) {
-          setExcavation(button.dataset.excavation);
-          if (button.dataset.layer) setLayer(button.dataset.layer);
-          navigate(`/plan?finding=${button.dataset.plan}`);
-        }
-        if (button.dataset.delete) {
-          if (!confirm("Удалить находку?")) return;
-          try {
-            await api(`/api/findings/${button.dataset.delete}`, { method: "DELETE" });
-            setStatus("Находка удалена", "ok");
-            load();
-          } catch (error) { setStatus(error.message, "error"); }
-        }
-      });
-    });
-    setStatus("");
-  };
-  document.getElementById("filters").addEventListener("submit", (event) => {
-    event.preventDefault();
-    const selectedExcavation = event.target.excavation_id.value;
-    const selectedLayer = event.target.layer_id.value;
-    setExcavation(selectedExcavation);
-    setLayer(selectedLayer);
-    page = 1;
-    if (selectedExcavation !== excavationId) renderInventory(root);
-    else load().catch((error) => setStatus(error.message, "error"));
-  });
-  document.getElementById("filters").excavation_id.addEventListener("change", () => {
-    setExcavation(document.getElementById("filters").excavation_id.value);
-    setLayer("");
-    renderInventory(root);
-  });
-  document.getElementById("reset").addEventListener("click", () => { setLayer(""); renderInventory(root); });
-  document.getElementById("new-finding").addEventListener("click", () => navigate("/finding/new"));
-  document.getElementById("to-reports")?.addEventListener("click", () => navigate("/reports"));
-  document.querySelectorAll("[data-sort]").forEach((header) => header.addEventListener("click", () => {
-    const key = header.dataset.sort;
-    order = sort === key && order === "asc" ? "desc" : "asc";
-    sort = key;
-    load().catch((error) => setStatus(error.message, "error"));
+export function InventoryPage() {
+  const { user } = useSession();
+  const { navigate, search } = useRouter();
+  const workspace = useWorkspace();
+  const { setStatus } = useStatus();
+  const [page, setPage] = useState(1);
+  const [sort, setSort] = useState("code");
+  const [order, setOrder] = useState("asc");
+  const [removeId, setRemoveId] = useState(null);
+  const [filters, setFilters] = useState(() => ({
+    excavation_id: workspace.excavationId,
+    layer_id: workspace.layerId,
+    q: search.get("q") || "",
+    code: "",
+    material: "",
+    square: "",
+    measurement_method: "",
+    photo_present: "",
+    number_from: "",
+    number_to: "",
+    elev_from: "",
+    elev_to: "",
   }));
-  document.getElementById("prev").addEventListener("click", () => { if (page > 1) { page -= 1; load(); } });
-  document.getElementById("next").addEventListener("click", () => { page += 1; load(); });
-  await load();
+  const excavations = useQuery(() => excavationsApi.list(), []);
+  const layers = useQuery(() => (filters.excavation_id ? layersApi.list(filters.excavation_id) : Promise.resolve([])), [filters.excavation_id]);
+  const dictionaries = useQuery(() => dictionariesApi.list(), []);
+  const params = useMemo(() => ({ ...filters, page, page_size: 12, sort, order }), [filters, page, sort, order]);
+  const findings = useQuery(() => findingsApi.list(params), [JSON.stringify(params)]);
+  const pages = Math.max(1, Math.ceil((findings.data?.total || 0) / 12));
+
+  const setFilter = (name, value) => {
+    setPage(1);
+    setFilters((current) => ({ ...current, [name]: value }));
+    if (name === "excavation_id") workspace.setExcavationId(value);
+    if (name === "layer_id") workspace.setLayerId(value);
+  };
+
+  const toggleSort = (key) => {
+    if (sort === key) setOrder(order === "asc" ? "desc" : "asc");
+    else { setSort(key); setOrder("asc"); }
+  };
+
+  return html`<section>
+    <${Breadcrumbs} items=${[{ label: "Раскопы", href: "/excavations" }, { label: "Опись" }]} />
+    <div className="title-row">
+      <${SectionHeading}>Опись<//>
+      <button type="button" className="btn btn-gold" onClick=${() => navigate("/findings/new")}>Новая находка</button>
+      ${allow(user, 2) ? html`<button type="button" className="btn btn-line" onClick=${() => navigate("/reports")}>Экспорт</button>` : null}
+    </div>
+    <form className="filter-strip" onSubmit=${(event) => event.preventDefault()}>
+      <div className="filter-grid">
+        <${Field} label="Раскоп"><select value=${filters.excavation_id} onChange=${(event) => setFilter("excavation_id", event.target.value)}>
+          <option value="">Все</option>
+          ${(excavations.data || []).map((item) => html`<option key=${item.id} value=${item.id}>${item.code} (${item.year})</option>`)}
+        </select></${Field}>
+        <${Field} label="Пласт"><select value=${filters.layer_id} onChange=${(event) => setFilter("layer_id", event.target.value)}>
+          <option value="">Все</option>
+          ${(layers.data || []).map((item) => html`<option key=${item.id} value=${item.id}>Пласт ${item.number}</option>`)}
+        </select></${Field}>
+        <${Field} label="Поиск"><input value=${filters.q} placeholder="код, описание, квадрат" onInput=${(event) => setFilter("q", event.target.value)} /></${Field}>
+        <${Field} label="Код"><input value=${filters.code} onInput=${(event) => setFilter("code", event.target.value)} /></${Field}>
+        <${Field} label="Материал"><select value=${filters.material} onChange=${(event) => setFilter("material", event.target.value)}>
+          <option value="">Все</option>
+          ${(dictionaries.data?.materials || []).filter((item) => item.is_active).map((item) => html`<option key=${item.id} value=${item.name}>${item.name}</option>`)}
+        </select></${Field}>
+        <${Field} label="Квадрат"><input value=${filters.square} onInput=${(event) => setFilter("square", event.target.value)} /></${Field}>
+        <${Field} label="Способ"><select value=${filters.measurement_method} onChange=${(event) => setFilter("measurement_method", event.target.value)}>
+          <option value="">Все</option>
+          ${Object.entries(METHOD_LABELS).map(([key, label]) => html`<option key=${key} value=${key}>${label}</option>`)}
+        </select></${Field}>
+        <${Field} label="Фото"><select value=${filters.photo_present} onChange=${(event) => setFilter("photo_present", event.target.value)}>
+          <option value="">Все</option><option value="true">Есть</option><option value="false">Нет</option>
+        </select></${Field}>
+        <${Field} label="Номер от"><input type="number" value=${filters.number_from} onInput=${(event) => setFilter("number_from", event.target.value)} /></${Field}>
+        <${Field} label="Номер до"><input type="number" value=${filters.number_to} onInput=${(event) => setFilter("number_to", event.target.value)} /></${Field}>
+        <${Field} label="Elev от"><input type="number" step="0.001" value=${filters.elev_from} onInput=${(event) => setFilter("elev_from", event.target.value)} /></${Field}>
+        <${Field} label="Elev до"><input type="number" step="0.001" value=${filters.elev_to} onInput=${(event) => setFilter("elev_to", event.target.value)} /></${Field}>
+        <button type="button" className="reset-link" onClick=${() => setFilters({ excavation_id: "", layer_id: "", q: "", code: "", material: "", square: "", measurement_method: "", photo_present: "", number_from: "", number_to: "", elev_from: "", elev_to: "" })}>Сбросить</button>
+      </div>
+    </form>
+    <${ErrorText} error=${findings.error} />
+    <div className="table-wrap"><table>
+      <thead><tr>
+        ${SORTS.map(([key, label]) => html`<th key=${key}><button type="button" className="sort" onClick=${() => toggleSort(key)}>${label}${sort === key ? (order === "asc" ? " ↑" : " ↓") : ""}</button></th>`)}
+        <th>Раскоп</th><th>Пласт</th><th>Способ</th><th>Фото</th><th>Замечания</th><th></th>
+      </tr></thead>
+      <tbody>
+        ${(findings.data?.items || []).map((item) => html`<tr key=${item.id} className=${item.issues?.length ? "problem" : ""}>
+          <td>${item.code}</td><td>${item.number}</td>
+          <td>${fmt(item.north)}</td><td>${fmt(item.east)}</td><td>${fmt(item.elev)}</td>
+          <td>${fmt(item.length_mm, 1)}</td><td>${fmt(item.width_mm, 1)}</td><td>${fmt(item.thickness_mm, 1)}</td>
+          <td>${item.excavation_code || ""}</td><td>${item.layer_number ?? "—"}</td>
+          <td>${METHOD_LABELS[item.measurement_method] || item.measurement_method}</td>
+          <td>${item.photo_present ? "да" : "нет"}</td>
+          <td>${item.issues?.length ? issueText(item.issues) : ""}</td>
+          <td className="actions">
+            <button type="button" className="btn btn-text" onClick=${() => navigate(`/findings/${item.id}`)}>Карточка</button>
+            <button type="button" className="btn btn-text" onClick=${() => navigate(`/photo/${item.id}`)}>Фото</button>
+            <button type="button" className="btn btn-text" onClick=${() => { workspace.setExcavationId(item.excavation_id); if (item.layer_id) workspace.setLayerId(item.layer_id); navigate(`/plan?finding=${item.id}`); }}>План</button>
+            ${allow(user, 2) ? html`<button type="button" className="btn btn-text danger" onClick=${() => setRemoveId(item.id)}>Удалить</button>` : null}
+          </td>
+        </tr>`)}
+        ${!(findings.data?.items || []).length && !findings.loading ? html`<tr><td colspan="14">Записей нет</td></tr>` : null}
+      </tbody>
+    </table></div>
+    <p className="muted">Стр. ${findings.data?.page || page}, всего ${findings.data?.total || 0}</p>
+    <${Pagination} page=${page} pages=${pages} onPage=${setPage} />
+    ${removeId ? html`<${ConfirmDialog} title="Удалить находку" text="Запись будет убрана из описи." confirmLabel="Удалить" onClose=${() => setRemoveId(null)} onConfirm=${async () => {
+      try {
+        await findingsApi.remove(removeId);
+        setRemoveId(null);
+        setStatus("Находка удалена", "ok");
+        findings.reload();
+      } catch (err) {
+        setStatus(err.message, "error");
+      }
+    }} />` : null}
+  </section>`;
 }

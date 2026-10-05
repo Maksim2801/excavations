@@ -1,155 +1,130 @@
-import { api } from "./api.js";
-import { loadExcavations, navigate, setExcavation, setLayer, state } from "./context.js";
-import { esc, field, fmt, options, setStatus } from "./ui.js";
+import { html, useEffect, useRef, useState } from "./html.js";
+import { useQuery } from "../hooks/useQuery.js";
+import { excavationsApi, layersApi, planApi } from "../services/api.js";
+import { useRouter } from "./router.js";
+import { useWorkspace } from "./workspace.js";
+import { Breadcrumbs, Field, SectionHeading } from "./ui.js";
 
-export async function renderPlan(root) {
-  const excavations = await loadExcavations();
-  const excavationId = state.excavationId || (excavations[0] ? String(excavations[0].id) : "");
-  const layers = excavationId ? await api(`/api/layers?excavation_id=${excavationId}`) : [];
-  const focus = new URLSearchParams(location.hash.split("?")[1] || "").get("finding");
-  root.innerHTML = `
-    <section class="panel stack">
-      <h2>План</h2>
-      <form id="plan-filters" class="filters">
-        ${field("Раскоп", `<select name="excavation_id">${options(excavations, excavationId, (item) => item.id, (item) => `${item.code} (${item.year})`)}</select>`)}
-        ${field("Пласт", `<select name="layer_id">${options(layers, state.layerId, (item) => item.id, (item) => `Пласт ${item.number}`, "Все пласты")}</select>`)}
-        ${field("Проекция", `<select name="view"><option value="ne">North / East</option><option value="n_elev">North / Elev</option><option value="e_elev">East / Elev</option></select>`)}
-        ${field("Цвет", `<select name="color_by"><option value="material">По материалу</option><option value="layer">По пласту</option></select>`)}
-        <button class="btn btn-primary" type="submit">Показать</button>
-      </form>
-      <div class="canvas-wrap"><canvas id="plan-canvas"></canvas><div id="plan-popup" class="popup" hidden></div></div>
-      <div id="legend" class="legend"></div>
-      <p class="muted" id="cursor"></p>
-    </section>`;
-  const canvas = document.getElementById("plan-canvas");
-  const popup = document.getElementById("plan-popup");
-  let plan = null;
-  let zoom = 1;
-  let panX = 0;
-  let panY = 0;
-  let drag = null;
+export function PlanPage() {
+  const { navigate, search } = useRouter();
+  const workspace = useWorkspace();
+  const canvasRef = useRef(null);
+  const [filters, setFilters] = useState({
+    excavation_id: workspace.excavationId,
+    layer_id: workspace.layerId,
+    view: "ne",
+    color_by: "material",
+  });
+  const [hover, setHover] = useState(null);
+  const [zoom, setZoom] = useState(1);
+  const excavations = useQuery(() => excavationsApi.list(), []);
+  const chosen = filters.excavation_id || excavations.data?.[0]?.id || "";
+  const layers = useQuery(() => (chosen ? layersApi.list(chosen) : Promise.resolve([])), [chosen]);
+  const plan = useQuery(() => (chosen ? planApi.get({ ...filters, excavation_id: chosen }) : Promise.resolve(null)), [chosen, filters.layer_id, filters.view, filters.color_by]);
+  const focus = search.get("finding");
 
-  const resize = () => {
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const data = plan.data;
+    if (!canvas || !data) return;
     const ratio = window.devicePixelRatio || 1;
-    canvas.width = canvas.clientWidth * ratio;
-    canvas.height = canvas.clientHeight * ratio;
-  };
-  const project = (x, y) => {
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
-    const bounds = plan.bounds;
-    const dx = Math.max(bounds.max_x - bounds.min_x, 0.001);
-    const dy = Math.max(bounds.max_y - bounds.min_y, 0.001);
-    const base = Math.min((width - 48) / dx, (height - 48) / dy);
-    return [
-      24 + panX + (x - bounds.min_x) * base * zoom,
-      height - 24 + panY - (y - bounds.min_y) * base * zoom,
-    ];
-  };
-  const draw = () => {
-    resize();
+    canvas.width = width * ratio;
+    canvas.height = height * ratio;
     const ctx = canvas.getContext("2d");
-    const ratio = window.devicePixelRatio || 1;
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-    ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
-    ctx.fillStyle = "#efe6d4";
-    ctx.fillRect(0, 0, canvas.clientWidth, canvas.clientHeight);
-    if (plan.outline.length > 2) {
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = "#f7f4ee";
+    ctx.fillRect(0, 0, width, height);
+    const bounds = data.bounds;
+    const spanX = bounds.max_x - bounds.min_x || 1;
+    const spanY = bounds.max_y - bounds.min_y || 1;
+    const scale = Math.min(width / spanX, height / spanY) * 0.86 * zoom;
+    const ox = (width - spanX * scale) / 2;
+    const oy = (height - spanY * scale) / 2;
+    const px = (x) => ox + (x - bounds.min_x) * scale;
+    const py = (y) => height - (oy + (y - bounds.min_y) * scale);
+    canvas.__project = { px, py, bounds, scale, width, height };
+    if (data.outline?.length) {
       ctx.beginPath();
-      plan.outline.forEach((point, index) => {
-        const [sx, sy] = project(point.x, point.y);
-        if (index === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+      data.outline.forEach((point, index) => {
+        const x = px(point.x);
+        const y = py(point.y);
+        if (index) ctx.lineTo(x, y);
+        else ctx.moveTo(x, y);
       });
       ctx.closePath();
-      ctx.fillStyle = "rgba(122, 90, 58, 0.18)";
-      ctx.strokeStyle = "#6b4e32";
-      ctx.lineWidth = 2;
-      ctx.fill();
+      ctx.strokeStyle = "#8A8A8A";
+      ctx.lineWidth = 1.5;
       ctx.stroke();
     }
-    for (const point of plan.gnss_points) {
-      const [sx, sy] = project(point.x, point.y);
-      ctx.fillStyle = point.point_type === "corner" ? "#2c2416" : "#8a8175";
-      ctx.fillRect(sx - 4, sy - 4, 8, 8);
-    }
-    for (const point of plan.points) {
-      const [sx, sy] = project(point.x, point.y);
+    (data.gnss_points || []).forEach((point) => {
+      ctx.fillStyle = point.point_type === "corner" ? "#B5532B" : "#7A7A7A";
+      ctx.fillRect(px(point.x) - 4, py(point.y) - 4, 8, 8);
+    });
+    (data.points || []).forEach((point) => {
       ctx.beginPath();
-      ctx.fillStyle = point.color;
-      ctx.arc(sx, sy, focus === String(point.id) ? 9 : 6, 0, Math.PI * 2);
+      ctx.fillStyle = point.color || "#111";
+      ctx.arc(px(point.x), py(point.y), String(point.id) === String(focus) ? 8 : 5, 0, Math.PI * 2);
       ctx.fill();
-      ctx.strokeStyle = "white";
-      ctx.stroke();
-    }
-  };
-  const load = async () => {
-    const form = document.getElementById("plan-filters");
-    const excavation = form.excavation_id.value;
-    const layer = form.layer_id.value;
-    setExcavation(excavation);
-    setLayer(layer);
-    const params = new URLSearchParams({ excavation_id: excavation, view: form.view.value, color_by: form.color_by.value });
-    if (layer) params.set("layer_id", layer);
-    plan = await api(`/api/plan?${params.toString()}`);
-    zoom = 1; panX = 0; panY = 0;
-    document.getElementById("legend").innerHTML = plan.legend.map((item) => `<span><i class="swatch" style="background:${esc(item.color)}"></i>${esc(item.key)}</span>`).join("");
-    draw();
-    setStatus(`Точек находок: ${plan.points.length}, GNSS: ${plan.gnss_points.length}`, "ok");
-    if (focus) show(plan.points.find((item) => String(item.id) === focus));
-  };
-  const show = (point) => {
-    if (!point) { popup.hidden = true; return; }
-    popup.hidden = false;
-    popup.innerHTML = `
-      <strong>${esc(point.code)}</strong>
-      <p>Пласт ${point.layer_number ?? "-"} · ${esc(point.material || "без материала")}</p>
-      <p>N ${fmt(point.north)} · E ${fmt(point.east)} · Z ${fmt(point.elev)}</p>
-      <p>Д ${fmt(point.length_mm, 1)} · Ш ${fmt(point.width_mm, 1)} · Т ${fmt(point.thickness_mm, 1)}</p>
-      <button class="btn btn-primary" id="open-finding" type="button">Перейти к описи</button>`;
-    document.getElementById("open-finding").onclick = () => navigate(`/finding/${point.id}`);
-  };
-  canvas.addEventListener("mousemove", (event) => {
-    if (!plan) return;
+    });
+  }, [plan.data, zoom, focus]);
+
+  const onMove = (event) => {
+    const canvas = canvasRef.current;
+    const data = plan.data;
+    const project = canvas?.__project;
+    if (!canvas || !data || !project) return;
     const rect = canvas.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
-    if (drag) { panX += x - drag.x; panY += y - drag.y; drag = { x, y }; draw(); return; }
-    const hit = plan.points.find((point) => {
-      const [sx, sy] = project(point.x, point.y);
-      return Math.hypot(sx - x, sy - y) < 12;
-    });
-    document.getElementById("cursor").textContent = hit ? `${hit.code}: N ${fmt(hit.north)}, E ${fmt(hit.east)}, Z ${fmt(hit.elev)}` : "Колесо - масштаб, перетаскивание - сдвиг";
-  });
-  canvas.addEventListener("mousedown", (event) => {
-    const rect = canvas.getBoundingClientRect();
-    drag = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-  });
-  window.addEventListener("mouseup", () => { drag = null; });
-  canvas.addEventListener("click", (event) => {
-    if (!plan) return;
-    const rect = canvas.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    const hit = plan.points.find((point) => {
-      const [sx, sy] = project(point.x, point.y);
-      return Math.hypot(sx - x, sy - y) < 12;
-    });
-    show(hit);
-  });
-  canvas.addEventListener("wheel", (event) => {
-    event.preventDefault();
-    zoom *= event.deltaY < 0 ? 1.1 : 0.9;
-    zoom = Math.min(12, Math.max(0.4, zoom));
-    draw();
-  }, { passive: false });
-  document.getElementById("plan-filters").addEventListener("submit", (event) => {
-    event.preventDefault();
-    load().catch((error) => setStatus(error.message, "error"));
-  });
-  document.getElementById("plan-filters").excavation_id.addEventListener("change", async (event) => {
-    setExcavation(event.target.value);
-    const next = await api(`/api/layers?excavation_id=${event.target.value}`);
-    document.getElementById("plan-filters").layer_id.innerHTML = options(next, "", (item) => item.id, (item) => `Пласт ${item.number}`, "Все пласты");
-  });
-  if (excavationId) await load();
+    const hit = (data.points || []).find((point) => Math.hypot(project.px(point.x) - x, project.py(point.y) - y) < 10);
+    setHover(hit ? { ...hit, left: x, top: y } : null);
+    const worldX = data.bounds.min_x + (x - (project.width - (data.bounds.max_x - data.bounds.min_x) * project.scale) / 2) / project.scale;
+    const worldY = data.bounds.min_y + ((project.height - y) - (project.height - (data.bounds.max_y - data.bounds.min_y) * project.scale) / 2) / project.scale;
+    canvas.dataset.cursor = `${worldX.toFixed(2)}, ${worldY.toFixed(2)}`;
+  };
+
+  return html`<section>
+    <${Breadcrumbs} items=${[{ label: "Раскопы", href: "/excavations" }, { label: "План" }]} />
+    <${SectionHeading}>План<//>
+    <form className="filter-strip" onSubmit=${(event) => { event.preventDefault(); plan.reload(); }}>
+      <div className="filter-bar">
+        <${Field} label="Раскоп"><select value=${chosen} onChange=${(event) => { workspace.setExcavationId(event.target.value); setFilters((current) => ({ ...current, excavation_id: event.target.value })); }}>
+          ${(excavations.data || []).map((item) => html`<option key=${item.id} value=${item.id}>${item.code} (${item.year})</option>`)}
+        </select></${Field}>
+        <${Field} label="Пласт"><select value=${filters.layer_id} onChange=${(event) => { workspace.setLayerId(event.target.value); setFilters((current) => ({ ...current, layer_id: event.target.value })); }}>
+          <option value="">Все пласты</option>
+          ${(layers.data || []).map((item) => html`<option key=${item.id} value=${item.id}>Пласт ${item.number}</option>`)}
+        </select></${Field}>
+        <${Field} label="Проекция"><select value=${filters.view} onChange=${(event) => setFilters((current) => ({ ...current, view: event.target.value }))}>
+          <option value="ne">North / East</option>
+          <option value="n_elev">North / Elev</option>
+          <option value="e_elev">East / Elev</option>
+        </select></${Field}>
+        <${Field} label="Цвет"><select value=${filters.color_by} onChange=${(event) => setFilters((current) => ({ ...current, color_by: event.target.value }))}>
+          <option value="material">По материалу</option>
+          <option value="layer">По пласту</option>
+        </select></${Field}>
+        <button className="btn btn-gold" type="submit">Показать</button>
+      </div>
+    </form>
+    <div className="canvas-wrap">
+      <canvas ref=${canvasRef} className="plan-canvas" onMouseMove=${onMove} onMouseLeave=${() => setHover(null)} onClick=${() => { if (hover) navigate(`/findings/${hover.id}`); }}></canvas>
+      <div className="map-zoom">
+        <button type="button" onClick=${() => setZoom((value) => Math.min(3, value + 0.25))}>+</button>
+        <button type="button" onClick=${() => setZoom((value) => Math.max(0.6, value - 0.25))}>−</button>
+      </div>
+      ${hover ? html`<div className="popup" style=${{ left: `${hover.left + 12}px`, top: `${hover.top + 12}px` }}>
+        <strong>${hover.code}-${hover.number}</strong>
+        <p>${hover.material || "без материала"} · кв. ${hover.square || "—"}</p>
+        <button type="button" className="btn btn-text" onClick=${() => navigate(`/inventory?q=${hover.code}`)}>Перейти к описи</button>
+      </div>` : null}
+    </div>
+    <div className="legend">
+      ${(plan.data?.legend || []).map((item) => html`<span key=${item.key}><i style=${{ background: item.color }}></i>${item.key}</span>`)}
+    </div>
+    <p className="muted">Квадраты — GNSS, круги — находки. Щелчок открывает карточку.</p>
+  </section>`;
 }

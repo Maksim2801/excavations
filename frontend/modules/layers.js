@@ -1,128 +1,100 @@
-import { api } from "./api.js";
-import { allow, loadExcavations, navigate, setExcavation, setLayer, state } from "./context.js";
-import { bindDraft, esc, field, formValues, num, options, setStatus } from "./ui.js";
+import { html, useState } from "./html.js";
+import { useQuery } from "../hooks/useQuery.js";
+import { excavationsApi, layersApi } from "../services/api.js";
+import { useSession } from "./session.js";
+import { useWorkspace } from "./workspace.js";
+import { useStatus } from "./status.js";
+import { LAYER_STATUS, allow, fmt } from "./labels.js";
+import { Breadcrumbs, ConfirmDialog, ErrorText, Field, Modal, SectionHeading } from "./ui.js";
 
-export async function renderLayers(root) {
-  const excavations = await loadExcavations();
-  const selected = state.excavationId || (excavations[0] ? String(excavations[0].id) : "");
-  const layers = selected ? await api(`/api/excavations/${selected}/layers`) : [];
-  root.innerHTML = `
-    <div class="layout">
-      <section class="panel">
-        <h2>Пласты</h2>
-        <form id="layer-form" class="stack">
-          ${field("Раскоп", `<select name="excavation_id">${options(excavations, selected, (item) => item.id, (item) => `${item.code} (${item.year})`)}</select>`)}
-          ${field("Номер", `<input name="number" type="number" min="1" required>`)}
-          ${field("Верхняя отметка", `<input name="top_elev" type="number" step="0.001" required>`)}
-          ${field("Нижняя отметка", `<input name="bottom_elev" type="number" step="0.001" required>`)}
-          ${field("Цвет", `<input name="color">`)}
-          ${field("Описание", `<textarea name="description"></textarea>`)}
-          ${field("Поверхность после зачистки", `<textarea name="surface_description"></textarea>`)}
-          ${field("Включения", `<textarea name="inclusions"></textarea>`)}
-          ${field("Интерпретация", `<textarea name="interpretation"></textarea>`)}
-          <div class="actions"><button class="btn btn-primary" type="submit">Создать пласт</button><button id="retry-layer" class="btn btn-ghost" type="button" hidden>Повторить</button></div>
-        </form>
-      </section>
-      <section class="stack" id="layer-list"></section>
-    </div>`;
-  document.getElementById("layer-list").innerHTML = layers.map((layer) => `
-    <article class="card" data-id="${layer.id}">
-      <h3>Пласт ${layer.number}</h3>
-      <p>${esc(layer.description || "")} · ${esc(layer.color || "цвет не указан")}</p>
-      <p>Elev ${layer.bottom_elev} - ${layer.top_elev}. Находки: ${layer.finding_count}, фото: ${layer.photo_count}</p>
-      <p class="muted">${esc(layer.surface_description || "")}</p>
-      <div class="actions">
-        <button class="btn btn-primary" type="button" data-open="${layer.id}" data-excavation="${layer.excavation_id}">Находки пласта</button>
-        ${allow(2) ? `<button class="btn btn-ghost" type="button" data-edit="${layer.id}">Править</button>` : ""}
-        <form class="actions" data-photo="${layer.id}" data-excavation="${layer.excavation_id}">
-          <input type="file" name="file" accept="image/*" required>
-          <button class="btn btn-ghost" type="submit">Фото пласта</button>
-        </form>
-      </div>
-      ${allow(2) ? `<form class="form-grid edit" data-save="${layer.id}" hidden>
-        <input name="description" value="${esc(layer.description || "")}" placeholder="Описание">
-        <input name="color" value="${esc(layer.color || "")}" placeholder="Цвет">
-        <input name="top_elev" type="number" step="0.001" value="${layer.top_elev}">
-        <input name="bottom_elev" type="number" step="0.001" value="${layer.bottom_elev}">
-        <button class="btn btn-primary" type="submit">Сохранить</button>
-      </form>` : ""}
-    </article>`).join("") || `<p class="panel">Пластов пока нет.</p>`;
+const EMPTY = { number: "", top_elev: "", bottom_elev: "", description: "", color: "", status: "open", surface_description: "", inclusions: "", interpretation: "", note: "" };
 
-  const form = document.getElementById("layer-form");
-  const draft = bindDraft(form, "draft-layer");
-  form.elements.excavation_id.addEventListener("change", () => {
-    setExcavation(form.elements.excavation_id.value);
-    renderLayers(root);
-  });
-  const retry = document.getElementById("retry-layer");
-  const submit = async () => {
-    const raw = formValues(form);
-    setStatus("Отправка пласта…");
+export function LayersPage() {
+  const { user } = useSession();
+  const { excavationId, setExcavationId, setLayerId } = useWorkspace();
+  const { setStatus } = useStatus();
+  const [editor, setEditor] = useState(null);
+  const [removeId, setRemoveId] = useState(null);
+  const [error, setError] = useState(null);
+  const excavations = useQuery(() => excavationsApi.list(), []);
+  const layers = useQuery(() => (excavationId ? layersApi.list(excavationId) : Promise.resolve([])), [excavationId]);
+
+  const save = async (event) => {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(event.target).entries());
+    data.excavation_id = Number(excavationId);
+    setError(null);
     try {
-      await api("/api/layers", {
-        method: "POST",
-        idempotencyKey: draft.idempotencyKey,
-        body: {
-          excavation_id: Number(raw.excavation_id),
-          number: Number(raw.number),
-          top_elev: num(raw.top_elev),
-          bottom_elev: num(raw.bottom_elev),
-          color: raw.color || null,
-          description: raw.description || null,
-          surface_description: raw.surface_description || null,
-          inclusions: raw.inclusions || null,
-          interpretation: raw.interpretation || null,
-        },
-      });
-      draft.clear();
-      setExcavation(raw.excavation_id);
-      setStatus("Пласт создан", "ok");
-      renderLayers(root);
-    } catch (error) {
-      retry.hidden = false;
-      setStatus(error.message, "error");
+      if (editor.id) await layersApi.update(editor.id, data);
+      else await layersApi.create(data);
+      setStatus("Пласт сохранён", "ok");
+      setEditor(null);
+      layers.reload();
+    } catch (err) {
+      setError(err);
+      setStatus(err.message, "error");
     }
   };
-  form.addEventListener("submit", (event) => { event.preventDefault(); submit(); });
-  retry.addEventListener("click", submit);
-  root.querySelector("#layer-list").addEventListener("click", async (event) => {
-    const edit = event.target.closest("[data-edit]");
-    const open = event.target.closest("[data-open]");
-    if (edit) edit.closest("article").querySelector(".edit").hidden = false;
-    if (open) {
-      setExcavation(open.dataset.excavation);
-      setLayer(open.dataset.open);
-      navigate("/inventory");
-    }
-  });
-  root.querySelectorAll("[data-save]").forEach((editForm) => {
-    editForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const raw = formValues(editForm);
+
+  return html`<section>
+    <${Breadcrumbs} items=${[{ label: "Раскопы", href: "/excavations" }, { label: "Пласты" }]} />
+    <${SectionHeading}>Пласты<//>
+    <div className="filter-strip">
+      <div className="filter-bar">
+        <label>Раскоп <select value=${excavationId} onChange=${(event) => setExcavationId(event.target.value)}>
+          <option value="">Выберите</option>
+          ${(excavations.data || []).map((item) => html`<option key=${item.id} value=${item.id}>${item.code} (${item.year})</option>`)}
+        </select></label>
+        ${allow(user, 1) && excavationId ? html`<button type="button" className="btn btn-gold" onClick=${() => setEditor({ ...EMPTY })}>Новый пласт</button>` : null}
+      </div>
+    </div>
+    ${!allow(user, 2) ? html`<p className="muted">Править описание и закрывать пласт могут камеральный сотрудник и руководитель. Полевой археолог может добавить пласт.</p>` : null}
+    <${ErrorText} error=${layers.error} />
+    <div className="table-wrap"><table>
+      <thead><tr><th>№</th><th>Описание</th><th>Верх</th><th>Низ</th><th>Статус</th><th>Находки</th><th></th></tr></thead>
+      <tbody>
+        ${(layers.data || []).map((layer) => html`<tr key=${layer.id}>
+          <td>${layer.number}</td>
+          <td>${layer.description || "—"}<br /><span className="muted">${layer.surface_description || ""}</span></td>
+          <td>${fmt(layer.top_elev)}</td>
+          <td>${fmt(layer.bottom_elev)}</td>
+          <td>${LAYER_STATUS[layer.status] || layer.status}</td>
+          <td>${layer.finding_count}</td>
+          <td className="actions">
+            <button type="button" className="btn btn-text" onClick=${() => { setLayerId(layer.id); setStatus(`Пласт ${layer.number} выбран`, "ok"); }}>В опись</button>
+            ${allow(user, 2) ? html`<button type="button" className="btn btn-text" onClick=${() => setEditor(layer)}>Править</button>` : null}
+            ${allow(user, 2) ? html`<button type="button" className="btn btn-text danger" onClick=${() => setRemoveId(layer.id)}>Удалить</button>` : null}
+          </td>
+        </tr>`)}
+        ${!(layers.data || []).length ? html`<tr><td colspan="7">Пластов нет</td></tr>` : null}
+      </tbody>
+    </table></div>
+    ${editor ? html`<${Modal} title=${editor.id ? "Пласт" : "Новый пласт"} onClose=${() => setEditor(null)}>
+      <form className="stack" key=${editor.id || "new"} onSubmit=${save}>
+        <${Field} label="Номер"><input name="number" type="number" min="1" required defaultValue=${editor.number} /></${Field}>
+        <${Field} label="Верхняя отметка"><input name="top_elev" type="number" step="0.001" required defaultValue=${editor.top_elev} /></${Field}>
+        <${Field} label="Нижняя отметка"><input name="bottom_elev" type="number" step="0.001" required defaultValue=${editor.bottom_elev} /></${Field}>
+        <${Field} label="Описание"><input name="description" defaultValue=${editor.description || ""} /></${Field}>
+        <${Field} label="Цвет"><input name="color" defaultValue=${editor.color || ""} /></${Field}>
+        <${Field} label="Статус"><select name="status" defaultValue=${editor.status || "open"}>${Object.entries(LAYER_STATUS).map(([key, label]) => html`<option key=${key} value=${key}>${label}</option>`)}</select></${Field}>
+        <${Field} label="Поверхность"><textarea name="surface_description" defaultValue=${editor.surface_description || ""}></textarea></${Field}>
+        <${Field} label="Включения"><input name="inclusions" defaultValue=${editor.inclusions || ""} /></${Field}>
+        <${Field} label="Интерпретация"><input name="interpretation" defaultValue=${editor.interpretation || ""} /></${Field}>
+        <${Field} label="Примечание"><textarea name="note" defaultValue=${editor.note || ""}></textarea></${Field}>
+        <${ErrorText} error=${error} />
+        <div className="actions"><button className="btn btn-gold" type="submit" disabled=${editor.id && !allow(user, 2)}>Сохранить</button></div>
+      </form>
+    <//>` : null}
+    ${removeId ? html`<${ConfirmDialog} title="Удалить пласт" text="Пласт без находок будет удалён." confirmLabel="Удалить" onClose=${() => setRemoveId(null)} onConfirm=${async () => {
       try {
-        await api(`/api/layers/${editForm.dataset.save}`, {
-          method: "PUT",
-          body: { description: raw.description, color: raw.color, top_elev: num(raw.top_elev), bottom_elev: num(raw.bottom_elev) },
-        });
-        setStatus("Пласт обновлён", "ok");
-        renderLayers(root);
-      } catch (error) { setStatus(error.message, "error"); }
-    });
-  });
-  root.querySelectorAll("[data-photo]").forEach((photoForm) => {
-    photoForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const data = new FormData();
-      data.append("file", photoForm.file.files[0]);
-      data.append("layer_id", photoForm.dataset.photo);
-      data.append("excavation_id", photoForm.dataset.excavation);
-      data.append("photo_type", "layer");
-      data.append("has_scale", "true");
-      try {
-        await api("/api/photos", { method: "POST", formData: data });
-        setStatus("Фотография пласта загружена", "ok");
-        renderLayers(root);
-      } catch (error) { setStatus(error.message, "error"); }
-    });
-  });
+        await layersApi.remove(removeId);
+        setRemoveId(null);
+        setStatus("Пласт удалён", "ok");
+        layers.reload();
+      } catch (err) {
+        setStatus(err.message, "error");
+        setRemoveId(null);
+      }
+    }} />` : null}
+  </section>`;
 }

@@ -4,23 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Полевые описи археологических находок</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Sans+Condensed:ital,wght@0,300;0,400;0,500;0,700;1,300;1,400&display=swap">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <p class="eyebrow">Полевая документация</p>
-      <h1>Опись находок</h1>
-    </div>
-    <nav id="nav" aria-label="Разделы"></nav>
-    <div class="session">
-      <span id="connection" class="pill">проверка связи</span>
-      <span id="who"></span>
-      <button id="logout" class="btn btn-ghost" type="button" hidden>Выход</button>
-    </div>
-  </header>
-  <div id="status" class="status-line" role="status"></div>
-  <main id="app"></main>
+  <div id="app"></div>
+  <script src="/vendor/react.production.min.js"></script>
+  <script src="/vendor/react-dom.production.min.js"></script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

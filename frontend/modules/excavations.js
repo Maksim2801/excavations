@@ -1,108 +1,164 @@
-import { api } from "./api.js";
-import { allow, invalidateExcavations, loadExcavations, navigate, setExcavation, state } from "./context.js";
-import { bindDraft, esc, field, formValues, num, setStatus } from "./ui.js";
+import { html, useState } from "./html.js";
+import { useQuery } from "../hooks/useQuery.js";
+import { excavationsApi } from "../services/api.js";
+import { useSession } from "./session.js";
+import { useRouter } from "./router.js";
+import { useWorkspace } from "./workspace.js";
+import { useStatus } from "./status.js";
+import { allow, fmt } from "./labels.js";
+import { Breadcrumbs, Field, Modal, Pagination, SectionHeading, ErrorText } from "./ui.js";
+import { terrainSrc } from "./layout.js";
 
-export async function renderExcavations(root) {
-  const items = await loadExcavations(true);
-  root.innerHTML = `
-    <div class="layout">
-      <section class="panel">
-        <h2>Раскопы</h2>
-        <p class="muted">Рабочий раскоп задаёт контекст описи, плана и GNSS.</p>
-        ${allow(3) ? `<form id="excavation-form" class="stack">
-          ${field("Код", `<input name="code" required>`)}
-          ${field("Год", `<input name="year" type="number" required value="2026">`)}
-          ${field("Центр North", `<input name="center_north" type="number" step="0.001" required>`)}
-          ${field("Центр East", `<input name="center_east" type="number" step="0.001" required>`)}
-          ${field("Центр Elev", `<input name="center_elev" type="number" step="0.001" required>`)}
-          ${field("Площадь, м²", `<input name="area_m2" type="number" step="0.1">`)}
-          ${field("Шаг сетки, м", `<input name="grid_step_m" type="number" step="0.1" value="5">`)}
-          ${field("Описание", `<textarea name="description"></textarea>`)}
-          ${field("Границы", `<textarea name="boundaries"></textarea>`)}
-          <div class="actions"><button class="btn btn-primary" type="submit">Создать раскоп</button><button class="btn btn-ghost" id="retry-excavation" type="button" hidden>Повторить</button></div>
-        </form>` : `<p>Создавать раскопы может руководитель работ.</p>`}
-      </section>
-      <section class="cards" id="excavation-cards"></section>
-    </div>`;
-  const cards = document.getElementById("excavation-cards");
-  cards.innerHTML = items.map((item) => `
-    <article class="card">
-      <h3>${esc(item.code)} · ${item.year}</h3>
-      <p>${item.status === "archived" ? '<span class="badge warn">архив</span>' : '<span class="badge">активный</span>'}</p>
-      <p>Центр: N ${item.center_north}, E ${item.center_east}, Z ${item.center_elev}</p>
-      <p class="muted">${esc(item.description || "")}</p>
-      <p>Пласты: ${item.layer_count}, находки: ${item.finding_count}, GNSS: ${item.gnss_count}</p>
-      <div class="actions">
-        <button class="btn btn-primary" type="button" data-use="${item.id}">Сделать рабочим</button>
-        <button class="btn btn-ghost" type="button" data-checks="${item.id}">Проверить</button>
-        ${allow(3) && item.status === "active" ? `<button class="btn btn-ghost" type="button" data-archive="${item.id}">В архив</button>` : ""}
-        ${allow(3) && item.status === "archived" ? `<button class="btn btn-ghost" type="button" data-restore="${item.id}">Вернуть</button>` : ""}
-      </div>
-      <div id="checks-${item.id}"></div>
-    </article>`).join("") || `<p>Раскопов пока нет.</p>`;
+const PAGE_SIZE = 6;
 
-  cards.addEventListener("click", async (event) => {
-    const button = event.target.closest("button");
-    if (!button) return;
+export function ExcavationsPage() {
+  const { user } = useSession();
+  const { navigate } = useRouter();
+  const { excavationId, setExcavationId } = useWorkspace();
+  const { setStatus } = useStatus();
+  const [year, setYear] = useState("");
+  const [page, setPage] = useState(1);
+  const [open, setOpen] = useState(false);
+  const [error, setError] = useState(null);
+  const query = useQuery(() => excavationsApi.list(), []);
+  const items = (query.data || []).filter((item) => !year || String(item.year) === year);
+  const years = [...new Set((query.data || []).map((item) => item.year))].sort((a, b) => b - a);
+  const pages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+  const visible = items.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  const create = async (event) => {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(event.target).entries());
+    setError(null);
     try {
-      if (button.dataset.use) {
-        setExcavation(button.dataset.use);
-        setStatus("Рабочий раскоп выбран", "ok");
-        navigate("/layers");
-      } else if (button.dataset.archive) {
-        await api(`/api/excavations/${button.dataset.archive}/archive`, { method: "POST" });
-        invalidateExcavations();
-        renderExcavations(root);
-      } else if (button.dataset.restore) {
-        await api(`/api/excavations/${button.dataset.restore}/restore`, { method: "POST" });
-        invalidateExcavations();
-        renderExcavations(root);
-      } else if (button.dataset.checks) {
-        const report = await api(`/api/excavations/${button.dataset.checks}/checks`);
-        document.getElementById(`checks-${button.dataset.checks}`).innerHTML = `
-          <ul class="check">
-            <li>Без координат: ${report.missing_coordinates.length}</li>
-            <li>Без размеров: ${report.missing_dimensions.length}</li>
-            <li>Без фото: ${report.missing_photos.length}</li>
-            <li>Без пласта: ${report.missing_layers.length}</li>
-            <li>Elev вне пласта: ${report.elev_outside_layer.length}</li>
-            <li>Вне контура GNSS: ${report.outside_contour.length}</li>
-          </ul>`;
-      }
-    } catch (error) {
-      setStatus(error.message, "error");
+      const created = await excavationsApi.create(data);
+      setStatus(`Раскоп ${created.code} создан`, "ok");
+      setOpen(false);
+      setExcavationId(created.id);
+      query.reload();
+    } catch (err) {
+      setError(err);
+      setStatus(err.message, "error");
     }
-  });
+  };
 
-  const form = document.getElementById("excavation-form");
-  if (!form) return;
-  const draft = bindDraft(form, "draft-excavation");
-  const retry = document.getElementById("retry-excavation");
-  const submit = async () => {
-    const raw = formValues(form);
-    const body = {
-      code: raw.code.trim(),
-      year: Number(raw.year),
-      center_north: num(raw.center_north),
-      center_east: num(raw.center_east),
-      center_elev: num(raw.center_elev),
-      description: raw.description || null,
-      boundaries: raw.boundaries || null,
-      area_m2: num(raw.area_m2),
-      grid_step_m: num(raw.grid_step_m) || 5,
-    };
-    setStatus("Отправка раскопа…");
+  return html`<section>
+    <${Breadcrumbs} items=${[{ label: "Главная", href: "/excavations" }, { label: "Раскопы" }]} />
+    <h1>Раскопы</h1>
+    <div className="filter-strip">
+      <div className="filter-bar">
+        <label>Год <select value=${year} onChange=${(event) => { setYear(event.target.value); setPage(1); }}>
+          <option value="">Все</option>
+          ${years.map((item) => html`<option key=${item} value=${item}>${item}</option>`)}
+        </select></label>
+        <button type="button" className="reset-link" onClick=${() => { setYear(""); setPage(1); }}>Сбросить</button>
+        ${allow(user, 3) ? html`<button type="button" className="btn btn-gold" onClick=${() => setOpen(true)}>Новый раскоп</button>` : html`<span className="muted">Создавать раскопы может руководитель работ.</span>`}
+      </div>
+    </div>
+    ${query.loading ? html`<p>Загрузка…</p>` : null}
+    <${ErrorText} error=${query.error} />
+    <div className="card-grid">
+      ${visible.map((item) => html`<a key=${item.id} className="expedition-card" href=${`/excavations/${item.id}`} onClick=${(event) => { event.preventDefault(); setExcavationId(item.id); navigate(`/excavations/${item.id}`); }}>
+        <img alt="" src=${terrainSrc(item.id, item.code)} />
+        <span className="expedition-card__overlay"></span>
+        <h3>${item.code}</h3>
+        <div className="expedition-card__meta">
+          <span className="pin" aria-hidden="true"></span>
+          <span>${item.place || item.description || "Поле"}</span>
+          <strong>${item.year}</strong>
+        </div>
+      </a>`)}
+    </div>
+    ${!query.loading && !visible.length ? html`<p className="empty">Раскопов нет</p>` : null}
+    <${Pagination} page=${Math.min(page, pages)} pages=${pages} onPage=${setPage} />
+    <p className="muted">Рабочий раскоп: ${excavationId ? `№ ${excavationId}` : "не выбран"}. Карточка открывает паспорт раскопа.</p>
+    ${open ? html`<${Modal} title="Новый раскоп" onClose=${() => setOpen(false)}>
+      <form className="stack" onSubmit=${create}>
+        <${Field} label="Код"><input name="code" required /></${Field}>
+        <${Field} label="Год"><input name="year" type="number" required defaultValue="2026" /></${Field}>
+        <${Field} label="Место"><input name="place" placeholder="Городище" /></${Field}>
+        <${Field} label="Центр North"><input name="center_north" type="number" step="0.001" required /></${Field}>
+        <${Field} label="Центр East"><input name="center_east" type="number" step="0.001" required /></${Field}>
+        <${Field} label="Центр Elev"><input name="center_elev" type="number" step="0.001" required /></${Field}>
+        <${Field} label="Площадь, м²"><input name="area_m2" type="number" step="0.1" /></${Field}>
+        <${Field} label="Шаг сетки, м"><input name="grid_step_m" type="number" step="0.1" defaultValue="5" /></${Field}>
+        <${Field} label="Описание"><textarea name="description"></textarea></${Field}>
+        <${Field} label="Границы"><textarea name="boundaries"></textarea></${Field}>
+        <${ErrorText} error=${error} />
+        <div className="actions"><button className="btn btn-gold" type="submit">Создать раскоп</button></div>
+      </form>
+    <//>` : null}
+  </section>`;
+}
+
+export function ExcavationPage({ id }) {
+  const { user } = useSession();
+  const { navigate } = useRouter();
+  const { setExcavationId } = useWorkspace();
+  const { setStatus } = useStatus();
+  const [checks, setChecks] = useState(null);
+  const query = useQuery(() => excavationsApi.get(id), [id]);
+  const item = query.data;
+
+  const run = async (action) => {
     try {
-      await api("/api/excavations", { method: "POST", body, idempotencyKey: draft.idempotencyKey });
-      draft.clear();
-      invalidateExcavations();
-      setStatus("Раскоп создан", "ok");
-      renderExcavations(root);
+      if (action === "archive") await excavationsApi.archive(id);
+      if (action === "restore") await excavationsApi.restore(id);
+      if (action === "use") {
+        setExcavationId(id);
+        setStatus("Раскоп выбран рабочим", "ok");
+        navigate("/inventory");
+        return;
+      }
+      if (action === "checks") {
+        setChecks(await excavationsApi.checks(id));
+        return;
+      }
+      setStatus("Состояние раскопа обновлено", "ok");
+      query.reload();
     } catch (error) {
-      retry.hidden = false;
       setStatus(error.message, "error");
     }
   };
-  form.addEventListener("submit", (event) => { event.preventDefault(); submit(); });
-  retry.addEventListener("click", submit);
+
+  if (query.loading) return html`<p>Загрузка…</p>`;
+  if (query.error) return html`<${ErrorText} error=${query.error} />`;
+  if (!item) return null;
+
+  return html`<article>
+    <${Breadcrumbs} items=${[{ label: "Раскопы", href: "/excavations" }, { label: `${item.code} · ${item.year}` }]} />
+    <${SectionHeading}>${item.code}<//>
+    <div className="detail-grid">
+      <aside className="info-card">
+        <p><span className="info-icon"></span>${item.year}</p>
+        <p><span className="info-icon info-icon-pin"></span>${item.place || "Поле"}</p>
+        <p>${item.status === "archived" ? "В архиве" : "Активный"}</p>
+        <p>Центр N ${fmt(item.center_north)} · E ${fmt(item.center_east)} · Z ${fmt(item.center_elev)}</p>
+        <p>Пласты ${item.layer_count} · находки ${item.finding_count} · GNSS ${item.gnss_count}</p>
+        <div className="share"><span>Ссылка</span><button type="button" onClick=${async () => { await navigator.clipboard?.writeText(location.href); setStatus("Ссылка скопирована", "ok"); }}>Копировать</button></div>
+      </aside>
+      <div>
+        <p className="lead">${item.description || "Описание раскопа пока не заполнено."}</p>
+        <p className="article">${item.boundaries || ""}</p>
+        <p className="article">Площадь ${fmt(item.area_m2, 1)} м², шаг сетки ${fmt(item.grid_step_m, 1)} м.</p>
+      </div>
+    </div>
+    <div className="actions">
+      <button type="button" className="btn btn-gold" onClick=${() => run("use")}>Сделать рабочим</button>
+      <button type="button" className="btn btn-line" onClick=${() => run("checks")}>Проверить</button>
+      <button type="button" className="btn btn-line" onClick=${() => navigate("/plan")}>Открыть план</button>
+      ${allow(user, 3) && item.status === "active" ? html`<button type="button" className="btn btn-line" onClick=${() => run("archive")}>В архив</button>` : null}
+      ${allow(user, 3) && item.status === "archived" ? html`<button type="button" className="btn btn-line" onClick=${() => run("restore")}>Вернуть</button>` : null}
+    </div>
+    ${checks ? html`<${Modal} title="Проверка раскопа" onClose=${() => setChecks(null)}>
+      <ul className="check-list">
+        <li>Без координат: ${checks.missing_coordinates.length}</li>
+        <li>Без размеров: ${checks.missing_dimensions.length}</li>
+        <li>Без фото: ${checks.missing_photos.length}</li>
+        <li>Без пласта: ${checks.missing_layers.length}</li>
+        <li>Отметка вне пласта: ${checks.elev_outside_layer.length}</li>
+        <li>Вне контура: ${checks.outside_contour.length}</li>
+      </ul>
+    <//>` : null}
+  </article>`;
 }

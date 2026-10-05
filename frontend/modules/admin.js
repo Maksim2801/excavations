@@ -1,85 +1,138 @@
-import { api } from "./api.js";
-import { esc, setStatus } from "./ui.js";
+import { html, useState } from "./html.js";
+import { useQuery } from "../hooks/useQuery.js";
+import { auditApi, dictionariesApi, usersApi } from "../services/api.js";
+import { useStatus } from "./status.js";
+import { ROLE_LABELS } from "./labels.js";
+import { Breadcrumbs, ErrorText, Field, Modal, SectionHeading } from "./ui.js";
 
-export async function renderAdmin(root, section) {
-  if (section === "users") return renderUsers(root);
-  const data = await api("/api/dictionaries");
-  const audit = await api("/api/audit?limit=30");
-  root.innerHTML = `
-    <section class="panel stack">
-      <h2>Справочники</h2>
-      <h3>Материалы</h3>
-      <form id="material-form" class="filters">
-        <input name="name" placeholder="Название" required>
-        <input name="code" placeholder="Код">
-        <input name="color" type="color" value="#2f6b4f">
-        <button class="btn btn-primary" type="submit">Добавить</button>
-      </form>
-      <div class="table-wrap"><table><thead><tr><th>Материал</th><th>Цвет</th><th>Активен</th></tr></thead><tbody>
-        ${data.materials.map((item) => `<tr><td>${esc(item.name)}</td><td><i class="swatch" style="background:${esc(item.color)}"></i>${esc(item.color)}</td><td>${item.is_active ? "да" : "нет"}</td></tr>`).join("")}
-      </tbody></table></div>
-      <h3>Цветовые схемы плана</h3>
-      ${data.color_schemes.map((item) => `<p>${esc(item.name)} · ${esc(item.mode)} ${item.is_default ? "(по умолчанию)" : ""} ${item.is_default ? "" : `<button class="btn btn-ghost" data-scheme="${item.id}" type="button">Сделать схемой по умолчанию</button>`}</p>`).join("")}
-      <h3>Типы GNSS, фото и измерений</h3>
-      <p>${data.gnss_point_types.map((item) => esc(item.name)).join(", ")}</p>
-      <p>${data.photo_types.map((item) => esc(item.name)).join(", ")}</p>
-      <p>${data.measurement_methods.map((item) => esc(item.name)).join(", ")}</p>
-      <h3>Журнал</h3>
-      <div class="table-wrap"><table><thead><tr><th>Время</th><th>Пользователь</th><th>Действие</th><th>Сущность</th><th>Детали</th></tr></thead><tbody>
-        ${audit.map((row) => `<tr><td>${esc(row.created_at)}</td><td>${esc(row.username || "")}</td><td>${esc(row.action)}</td><td>${esc(row.entity)}</td><td>${esc(row.details || "")}</td></tr>`).join("")}
-      </tbody></table></div>
-    </section>`;
-  document.getElementById("material-form").addEventListener("submit", async (event) => {
+export function DictionariesPage() {
+  const { setStatus } = useStatus();
+  const query = useQuery(() => dictionariesApi.list(), []);
+  const [open, setOpen] = useState(false);
+  const data = query.data;
+
+  const add = async (event) => {
     event.preventDefault();
-    const raw = Object.fromEntries(new FormData(event.target).entries());
     try {
-      await api("/api/dictionaries/materials", { method: "POST", body: raw });
+      await dictionariesApi.addMaterial(Object.fromEntries(new FormData(event.target).entries()));
+      setOpen(false);
       setStatus("Материал добавлен", "ok");
-      renderAdmin(root, "dictionaries");
-    } catch (error) { setStatus(error.message, "error"); }
-  });
-  root.querySelectorAll("[data-scheme]").forEach((button) => button.addEventListener("click", async () => {
-    await api(`/api/dictionaries/color-schemes/${button.dataset.scheme}`, { method: "PUT", body: { is_default: true } });
-    setStatus("Цветовая схема обновлена", "ok");
-    renderAdmin(root, "dictionaries");
-  }));
+      query.reload();
+    } catch (error) {
+      setStatus(error.message, "error");
+    }
+  };
+
+  const toggle = async (kind, item) => {
+    const path = { materials: "materials", photo_types: "photo-types", gnss_point_types: "gnss-types", measurement_methods: "measurement-methods" }[kind];
+    try {
+      if (kind === "materials") await dictionariesApi.updateMaterial(item.id, { is_active: !item.is_active });
+      else if (kind === "color_schemes") await dictionariesApi.updateNamed("color-schemes", item.id, { is_default: !item.is_default, is_active: true });
+      else await dictionariesApi.updateNamed(path, item.id, { is_active: !item.is_active });
+      query.reload();
+    } catch (error) {
+      setStatus(error.message, "error");
+    }
+  };
+
+  return html`<section>
+    <${Breadcrumbs} items=${[{ label: "Раскопы", href: "/excavations" }, { label: "Справочники" }]} />
+    <div className="title-row">
+      <${SectionHeading}>Справочники<//>
+      <button type="button" className="btn btn-gold" onClick=${() => setOpen(true)}>Новый материал</button>
+    </div>
+    <${ErrorText} error=${query.error} />
+    ${[["materials", "Материалы"], ["photo_types", "Типы фото"], ["gnss_point_types", "Типы GNSS"], ["measurement_methods", "Способы измерения"], ["color_schemes", "Цветовые схемы плана"]].map(([key, title]) => html`<div key=${key}>
+      <h3 className="subhead">${title}</h3>
+      <div className="table-wrap"><table>
+        <thead><tr><th>Название</th><th>Код</th><th>Состояние</th><th></th></tr></thead>
+        <tbody>${(data?.[key] || []).map((item) => html`<tr key=${item.id}>
+          <td>${item.color ? html`<i className="swatch" style=${{ background: item.color }}></i>` : null}${item.name}</td>
+          <td>${item.code || item.mode || "—"}</td>
+          <td>${key === "color_schemes" ? (item.is_default ? "по умолчанию" : "запасная") : (item.is_active ? "активен" : "скрыт")}</td>
+          <td><button type="button" className="btn btn-text" onClick=${() => toggle(key, item)}>${key === "color_schemes" ? "Сделать основной" : (item.is_active ? "Скрыть" : "Вернуть")}</button></td>
+        </tr>`)}</tbody>
+      </table></div>
+    </div>`)}
+    ${open ? html`<${Modal} title="Новый материал" onClose=${() => setOpen(false)}>
+      <form className="stack" onSubmit=${add}>
+        <${Field} label="Название"><input name="name" required /></${Field}>
+        <${Field} label="Код"><input name="code" /></${Field}>
+        <${Field} label="Цвет"><input name="color" type="color" defaultValue="#5c6b73" /></${Field}>
+        <div className="actions"><button className="btn btn-gold" type="submit">Добавить</button></div>
+      </form>
+    <//>` : null}
+  </section>`;
 }
 
-async function renderUsers(root) {
-  const users = await api("/api/users");
-  root.innerHTML = `
-    <section class="panel stack">
-      <h2>Пользователи</h2>
-      <form id="user-form" class="filters">
-        <input name="username" placeholder="Логин" required>
-        <input name="full_name" placeholder="Имя" required>
-        <input name="password" type="password" placeholder="Пароль" required minlength="8">
-        <select name="role"><option value="field_archaeologist">Полевой археолог</option><option value="camera_staff">Камеральный сотрудник</option><option value="supervisor">Руководитель работ</option></select>
-        <button class="btn btn-primary" type="submit">Создать</button>
-      </form>
-      <div class="table-wrap"><table><thead><tr><th>Логин</th><th>Имя</th><th>Роль</th><th>Активен</th><th></th></tr></thead><tbody>
-        ${users.map((user) => `<tr><td>${esc(user.username)}</td><td>${esc(user.full_name)}</td><td>
-          <select data-role="${user.id}">${["field_archaeologist", "camera_staff", "supervisor"].map((role) => `<option value="${role}" ${user.role === role ? "selected" : ""}>${esc(role)}</option>`).join("")}</select>
-        </td><td>${user.is_active ? "да" : "нет"}</td><td><button class="btn btn-ghost" data-save="${user.id}" type="button">Сохранить роль</button></td></tr>`).join("")}
-      </tbody></table></div>
-    </section>`;
-  document.getElementById("user-form").addEventListener("submit", async (event) => {
+export function UsersPage() {
+  const { setStatus } = useStatus();
+  const users = useQuery(() => usersApi.list(), []);
+  const audit = useQuery(() => auditApi.list().catch(() => []), []);
+  const [open, setOpen] = useState(false);
+
+  const create = async (event) => {
     event.preventDefault();
-    const raw = Object.fromEntries(new FormData(event.target).entries());
+    const data = Object.fromEntries(new FormData(event.target).entries());
     try {
-      await api(`/api/users?role=${encodeURIComponent(raw.role)}`, {
-        method: "POST",
-        body: { username: raw.username, full_name: raw.full_name, password: raw.password },
-      });
+      await usersApi.create(data);
+      setOpen(false);
       setStatus("Пользователь создан", "ok");
-      renderUsers(root);
-    } catch (error) { setStatus(error.message, "error"); }
-  });
-  root.querySelectorAll("[data-save]").forEach((button) => button.addEventListener("click", async () => {
-    const role = root.querySelector(`[data-role="${button.dataset.save}"]`).value;
+      users.reload();
+    } catch (error) {
+      setStatus(error.message, "error");
+    }
+  };
+
+  const update = async (user, patch) => {
     try {
-      await api(`/api/users/${button.dataset.save}`, { method: "PUT", body: { role } });
-      setStatus("Роль обновлена", "ok");
-    } catch (error) { setStatus(error.message, "error"); }
-  }));
+      await usersApi.update(user.id, patch);
+      setStatus("Пользователь обновлён", "ok");
+      users.reload();
+    } catch (error) {
+      setStatus(error.message, "error");
+    }
+  };
+
+  return html`<section>
+    <${Breadcrumbs} items=${[{ label: "Раскопы", href: "/excavations" }, { label: "Пользователи" }]} />
+    <div className="title-row">
+      <${SectionHeading}>Пользователи<//>
+      <button type="button" className="btn btn-gold" onClick=${() => setOpen(true)}>Новый пользователь</button>
+    </div>
+    <${ErrorText} error=${users.error} />
+    <div className="table-wrap"><table>
+      <thead><tr><th>Имя</th><th>Логин</th><th>Роль</th><th>Почта</th><th>Доступ</th></tr></thead>
+      <tbody>${(users.data || []).map((user) => html`<tr key=${user.id}>
+        <td>${user.full_name}</td>
+        <td>${user.username}</td>
+        <td><select value=${user.role} onChange=${(event) => update(user, { role: event.target.value })}>
+          ${Object.entries(ROLE_LABELS).map(([key, label]) => html`<option key=${key} value=${key}>${label}</option>`)}
+        </select></td>
+        <td>${user.email || "—"}</td>
+        <td><button type="button" className="btn btn-text" onClick=${() => update(user, { is_active: !user.is_active })}>${user.is_active ? "Отключить" : "Включить"}</button></td>
+      </tr>`)}</tbody>
+    </table></div>
+    <h3 className="subhead">Журнал</h3>
+    <div className="table-wrap"><table>
+      <thead><tr><th>Когда</th><th>Кто</th><th>Действие</th><th>Объект</th><th>Детали</th></tr></thead>
+      <tbody>${(audit.data || []).map((item) => html`<tr key=${item.id}>
+        <td>${String(item.at || item.created_at || "").replace("T", " ").slice(0, 16)}</td>
+        <td>${item.user_name || item.username || item.user_id}</td>
+        <td>${item.action}</td>
+        <td>${item.entity} ${item.entity_id}</td>
+        <td>${item.details || ""}</td>
+      </tr>`)}</tbody>
+    </table></div>
+    ${open ? html`<${Modal} title="Новый пользователь" onClose=${() => setOpen(false)}>
+      <form className="stack" onSubmit=${create}>
+        <${Field} label="Логин"><input name="username" required minlength="3" /></${Field}>
+        <${Field} label="Полное имя"><input name="full_name" required /></${Field}>
+        <${Field} label="Почта"><input name="email" type="email" /></${Field}>
+        <${Field} label="Пароль"><input name="password" type="password" minlength="8" required /></${Field}>
+        <${Field} label="Роль"><select name="role">${Object.entries(ROLE_LABELS).map(([key, label]) => html`<option key=${key} value=${key}>${label}</option>`)}</select></${Field}>
+        <div className="actions"><button className="btn btn-gold" type="submit">Создать</button></div>
+      </form>
+    <//>` : null}
+  </section>`;
 }

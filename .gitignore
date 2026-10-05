@@ -13,3 +13,5 @@ backend/reports/*
 _diploma_extract.txt
 *.log
 .DS_Store
+node_modules/
+design.json

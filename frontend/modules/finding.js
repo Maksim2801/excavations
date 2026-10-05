@@ -1,180 +1,117 @@
-import { api } from "./api.js";
-import { allow, loadExcavations, navigate, setExcavation, setLayer, state } from "./context.js";
-import { bindDraft, esc, field, formValues, num, options, setStatus, uuid } from "./ui.js";
+import { html, useEffect, useState } from "./html.js";
+import { useQuery } from "../hooks/useQuery.js";
+import { dictionariesApi, excavationsApi, findingsApi, layersApi, uuid } from "../services/api.js";
+import { useSession } from "./session.js";
+import { useRouter } from "./router.js";
+import { useWorkspace } from "./workspace.js";
+import { useStatus } from "./status.js";
+import { METHOD_LABELS, allow, issueText } from "./labels.js";
+import { Breadcrumbs, ErrorText, Field, SectionHeading, useDraft } from "./ui.js";
 
-export async function renderFinding(root, id) {
-  const excavations = await loadExcavations();
-  const dictionaries = await api("/api/dictionaries");
+const BLANK = {
+  excavation_id: "", layer_id: "", code: "", number: "", square: "", material: "", find_type: "",
+  description: "", north: "", east: "", elev: "", length_mm: "", width_mm: "", thickness_mm: "",
+  quantity: 1, note: "", vessel_part: "", ornament: "", surface_color: "", fracture_color: "",
+  fabric: "", temper: "", surface_treatment: "", depth_cm: "", pt: "", measurement_method: "none",
+};
+
+export function FindingPage({ id }) {
   const isNew = id === "new";
-  const finding = isNew ? null : await api(`/api/findings/${id}`);
-  const excavationId = finding?.excavation_id || state.excavationId || excavations[0]?.id || "";
-  const layers = excavationId ? await api(`/api/layers?excavation_id=${excavationId}`) : [];
-  const materials = dictionaries.materials.filter((item) => item.is_active);
-  const lockedDimensions = finding?.measurement_method === "photo" && !allow(2);
-  root.innerHTML = `
-    <section class="panel stack">
-      <div class="actions">
-        <h2>${isNew ? "Новая находка" : `Находка ${esc(finding.code)}-${finding.number}`}</h2>
-        ${finding ? `<button class="btn btn-ghost" id="go-photo" type="button">Фотоанализ</button><button class="btn btn-ghost" id="go-plan" type="button">На плане</button>` : ""}
-      </div>
-      <form id="finding-form" class="stack">
-        <h3>Идентификация</h3>
-        <div class="form-grid">
-          ${field("Код", `<input name="code" required value="${esc(finding?.code || "")}">`)}
-          ${field("Номер", `<input name="number" type="number" min="1" required value="${finding?.number || ""}">`)}
-          ${field("Раскоп", `<select name="excavation_id">${options(excavations, excavationId, (item) => item.id, (item) => `${item.code} (${item.year})`)}</select>`)}
-          ${field("Пласт", `<select name="layer_id">${options(layers, finding?.layer_id || state.layerId, (item) => item.id, (item) => `Пласт ${item.number}`, "Не выбран")}</select>`)}
-        </div>
-        <h3>Локализация</h3>
-        <div class="form-grid">
-          ${field("Квадрат", `<input name="square" value="${esc(finding?.square || "")}">`)}
-          ${field("North", `<input name="north" type="number" step="0.001" value="${finding?.north ?? ""}">`)}
-          ${field("East", `<input name="east" type="number" step="0.001" value="${finding?.east ?? ""}">`)}
-          ${field("Elev", `<input name="elev" type="number" step="0.001" value="${finding?.elev ?? ""}">`)}
-          ${field("Глубина, см", `<input name="depth_cm" type="number" step="0.1" value="${finding?.depth_cm ?? ""}">`)}
-        </div>
-        <h3>Описание</h3>
-        <div class="form-grid">
-          ${field("Материал", `<select name="material">${options(materials, finding?.material || "", (item) => item.name, (item) => item.name, "Не выбран")}</select>`)}
-          ${field("Тип находки", `<input name="find_type" value="${esc(finding?.find_type || "")}">`)}
-          ${field("Количество", `<input name="quantity" type="number" min="1" value="${finding?.quantity || 1}">`)}
-          ${field("Часть сосуда", `<input name="vessel_part" value="${esc(finding?.vessel_part || "")}">`)}
-          ${field("Орнамент", `<input name="ornament" value="${esc(finding?.ornament || "")}">`)}
-          ${field("Цвет поверхности", `<input name="surface_color" value="${esc(finding?.surface_color || "")}">`)}
-        </div>
-        ${field("Описание", `<textarea name="description">${esc(finding?.description || "")}</textarea>`)}
-        ${field("Примечание", `<textarea name="note">${esc(finding?.note || "")}</textarea>`)}
-        <h3>Размеры, мм</h3>
-        <div class="form-grid">
-          ${field("Длина", `<input name="length_mm" type="number" step="0.1" ${lockedDimensions ? "readonly" : ""} value="${finding?.length_mm ?? ""}">`)}
-          ${field("Ширина", `<input name="width_mm" type="number" step="0.1" ${lockedDimensions ? "readonly" : ""} value="${finding?.width_mm ?? ""}">`)}
-          ${field("Толщина", `<input name="thickness_mm" type="number" step="0.1" ${lockedDimensions ? "readonly" : ""} value="${finding?.thickness_mm ?? ""}">`)}
-        </div>
-        <p class="muted">Способ измерения: ${finding ? (finding.measurement_method === "photo" ? "по фото" : finding.measurement_method === "manual" ? "ручное" : "не указан") : "будет определён при сохранении"}.</p>
-        <div class="actions">
-          <button class="btn btn-primary" type="submit">Сохранить</button>
-          <button class="btn btn-ghost" id="retry-finding" type="button" hidden>Повторить</button>
-          ${finding && allow(2) && finding.measurement_method === "photo" ? `<button class="btn btn-ghost" id="make-manual" type="button">Считать измерение ручным</button>` : ""}
-          ${finding && !lockedDimensions ? `<button class="btn btn-ghost" id="save-dimensions" type="button">Сохранить размеры как ручные</button>` : ""}
-        </div>
-      </form>
-      ${finding ? `<section><h3>Фотографии</h3><div class="thumbs" id="thumbs"></div>
-        <form id="photo-form" class="actions"><input type="file" name="file" accept="image/*" required><label><input type="checkbox" name="has_scale" checked> есть масштаб</label><button class="btn btn-primary" type="submit">Загрузить</button></form>
-        <h3>История измерений</h3><div class="table-wrap"><table><thead><tr><th>Тип</th><th>Способ</th><th>Источник</th><th>Статус маркера</th><th>Масштаб, мм</th><th>Результат, мм</th><th>Принято</th></tr></thead><tbody id="measures"></tbody></table></div></section>` : `<p class="muted">После сохранения можно загрузить фотографию и выполнить измерение. Повторная отправка не создаст дубликат.</p>`}
-    </section>`;
+  const { user } = useSession();
+  const { navigate } = useRouter();
+  const workspace = useWorkspace();
+  const { setStatus } = useStatus();
+  const [error, setError] = useState(null);
+  const [key] = useState(() => uuid());
+  const loaded = useQuery(() => (isNew ? Promise.resolve(null) : findingsApi.get(id)), [id]);
+  const excavations = useQuery(() => excavationsApi.list(), []);
+  const [draft, setDraft, clearDraft] = useDraft("finding-draft", { ...BLANK, excavation_id: workspace.excavationId, layer_id: workspace.layerId });
+  const source = isNew ? draft : (loaded.data || BLANK);
+  const layers = useQuery(() => (source.excavation_id ? layersApi.list(source.excavation_id) : Promise.resolve([])), [source.excavation_id]);
+  const dictionaries = useQuery(() => dictionariesApi.list(), []);
 
-  const form = document.getElementById("finding-form");
-  const draft = isNew ? bindDraft(form, "draft-finding") : { idempotencyKey: uuid(), clear() {} };
-  form.elements.excavation_id.addEventListener("change", async () => {
-    setExcavation(form.elements.excavation_id.value);
-    const nextLayers = await api(`/api/layers?excavation_id=${form.elements.excavation_id.value}`);
-    form.elements.layer_id.innerHTML = options(nextLayers, "", (item) => item.id, (item) => `Пласт ${item.number}`, "Не выбран");
-  });
-  const payloadFromForm = () => {
-    const raw = formValues(form);
-    return {
-      excavation_id: Number(raw.excavation_id),
-      layer_id: raw.layer_id ? Number(raw.layer_id) : null,
-      code: raw.code.trim(),
-      number: Number(raw.number),
-      square: raw.square || null,
-      north: num(raw.north),
-      east: num(raw.east),
-      elev: num(raw.elev),
-      depth_cm: num(raw.depth_cm),
-      material: raw.material || null,
-      find_type: raw.find_type || null,
-      quantity: Number(raw.quantity || 1),
-      vessel_part: raw.vessel_part || null,
-      ornament: raw.ornament || null,
-      surface_color: raw.surface_color || null,
-      description: raw.description || null,
-      note: raw.note || null,
-      length_mm: num(raw.length_mm),
-      width_mm: num(raw.width_mm),
-      thickness_mm: num(raw.thickness_mm),
-    };
+  useEffect(() => {
+    if (!isNew && loaded.data) setStatus(loaded.data.issues?.length ? issueText(loaded.data.issues) : "Карточка без замечаний", loaded.data.issues?.length ? "warn" : "ok");
+  }, [isNew, loaded.data]);
+
+  const onChange = (event) => {
+    if (!isNew) return;
+    const { name, value } = event.target;
+    setDraft((current) => ({ ...current, [name]: value }));
   };
-  const retry = document.getElementById("retry-finding");
-  const save = async () => {
-    const body = payloadFromForm();
-    setStatus("Отправка находки…");
+
+  const save = async (event) => {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(event.target).entries());
+    Object.keys(data).forEach((key) => { if (data[key] === "") delete data[key]; });
+    if (!allow(user, 2)) delete data.measurement_method;
+    setError(null);
     try {
-      if (isNew) {
-        const created = await api("/api/findings", { method: "POST", body, idempotencyKey: draft.idempotencyKey });
-        draft.clear();
-        setExcavation(body.excavation_id);
-        setLayer(body.layer_id || "");
-        setStatus("Находка сохранена", "ok");
-        navigate(`/finding/${created.id}`);
-      } else {
-        const update = { ...body };
-        if (lockedDimensions) {
-          delete update.length_mm; delete update.width_mm; delete update.thickness_mm;
-        }
-        await api(`/api/findings/${id}`, { method: "PUT", body: update });
-        setStatus("Карточка обновлена", "ok");
-        renderFinding(root, id);
-      }
-    } catch (error) {
-      retry.hidden = false;
-      setStatus(error.message, "error");
+      const saved = isNew ? await findingsApi.create(data, key) : await findingsApi.update(id, data);
+      if (isNew) clearDraft();
+      setStatus("Находка сохранена", "ok");
+      navigate(`/findings/${saved.id}`);
+    } catch (err) {
+      setError(err);
+      setStatus(err.message, "error");
     }
   };
-  form.addEventListener("submit", (event) => { event.preventDefault(); save(); });
-  retry.addEventListener("click", save);
-  document.getElementById("save-dimensions")?.addEventListener("click", async () => {
-    const body = payloadFromForm();
-    try {
-      await api(`/api/findings/${id}/dimensions`, {
-        method: "PUT",
-        body: { length_mm: body.length_mm, width_mm: body.width_mm, thickness_mm: body.thickness_mm, measurement_method: "manual" },
-      });
-      setStatus("Размеры записаны как ручные", "ok");
-      renderFinding(root, id);
-    } catch (error) { setStatus(error.message, "error"); }
-  });
-  document.getElementById("make-manual")?.addEventListener("click", async () => {
-    const body = payloadFromForm();
-    try {
-      await api(`/api/findings/${id}/dimensions`, {
-        method: "PUT",
-        body: { length_mm: body.length_mm, width_mm: body.width_mm, thickness_mm: body.thickness_mm, measurement_method: "manual" },
-      });
-      setStatus("Измерение переведено в ручной режим", "ok");
-      renderFinding(root, id);
-    } catch (error) { setStatus(error.message, "error"); }
-  });
-  document.getElementById("go-photo")?.addEventListener("click", () => navigate(`/photo/${id}`));
-  document.getElementById("go-plan")?.addEventListener("click", () => {
-    setExcavation(finding.excavation_id);
-    if (finding.layer_id) setLayer(finding.layer_id);
-    navigate(`/plan?finding=${id}`);
-  });
-  if (!finding) return;
-  const photos = finding.photos || [];
-  const thumbs = document.getElementById("thumbs");
-  thumbs.innerHTML = photos.map((photo) => `<button type="button" data-photo="${photo.id}"><img alt="${esc(photo.original_name)}" src=""></button>`).join("") || "<p>Фотографий нет</p>";
-  for (const photo of photos) {
-    const image = thumbs.querySelector(`[data-photo="${photo.id}"] img`);
-    api(`/api/photos/${photo.id}/thumb`, { raw: true }).then((response) => response.blob()).then((blob) => { image.src = URL.createObjectURL(blob); }).catch(() => {});
-    thumbs.querySelector(`[data-photo="${photo.id}"]`).addEventListener("click", () => navigate(`/photo/${finding.id}?photo=${photo.id}`));
-  }
-  document.getElementById("measures").innerHTML = (finding.measurements || []).map((item) => `
-    <tr><td>${esc(item.measurement_type)}</td><td>${item.method === "photo" ? "по фото" : "ручное"}</td><td>${esc(item.result_source)}</td><td>${esc(item.detection_status || "")}</td><td>${item.scale_mm ?? "-"}</td><td>${item.result_mm}</td><td>${item.accepted ? "да" : "нет"}</td></tr>
-  `).join("") || `<tr><td colspan="7">Измерений нет</td></tr>`;
-  document.getElementById("photo-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const data = new FormData();
-    data.append("file", event.target.file.files[0]);
-    data.append("finding_id", String(finding.id));
-    data.append("photo_type", "finding");
-    data.append("has_scale", event.target.has_scale.checked ? "true" : "false");
-    setStatus("Загрузка фотографии…");
-    try {
-      await api("/api/photos", { method: "POST", formData: data });
-      setStatus("Фотография загружена", "ok");
-      renderFinding(root, id);
-    } catch (error) { setStatus(error.message, "error"); }
-  });
+
+  if (!isNew && loaded.loading) return html`<p>Загрузка…</p>`;
+  if (loaded.error) return html`<${ErrorText} error=${loaded.error} />`;
+
+  return html`<section>
+    <${Breadcrumbs} items=${[{ label: "Опись", href: "/inventory" }, { label: isNew ? "Новая находка" : `${source.code}-${source.number}` }]} />
+    <${SectionHeading}>${isNew ? "Новая находка" : "Карточка находки"}<//>
+    <form className="stack card-frame" key=${isNew ? "new" : source.id} onSubmit=${save} onChange=${onChange}>
+      <div className="filter-grid">
+        <${Field} label="Раскоп"><select name="excavation_id" defaultValue=${source.excavation_id || ""} required onChange=${(event) => { if (isNew) setDraft((current) => ({ ...current, excavation_id: event.target.value })); }}>
+          <option value="">Выберите</option>
+          ${(excavations.data || []).map((item) => html`<option key=${item.id} value=${item.id}>${item.code} (${item.year})</option>`)}
+        </select></${Field}>
+        <${Field} label="Пласт"><select name="layer_id" defaultValue=${source.layer_id || ""}>
+          <option value="">Без пласта</option>
+          ${(layers.data || []).map((item) => html`<option key=${item.id} value=${item.id}>Пласт ${item.number}</option>`)}
+        </select></${Field}>
+        <${Field} label="Код"><input name="code" required defaultValue=${source.code || ""} /></${Field}>
+        <${Field} label="Номер"><input name="number" type="number" min="1" required defaultValue=${source.number || ""} /></${Field}>
+        <${Field} label="Квадрат"><input name="square" defaultValue=${source.square || ""} /></${Field}>
+        <${Field} label="Материал"><select name="material" defaultValue=${source.material || ""}>
+          <option value="">Не указан</option>
+          ${(dictionaries.data?.materials || []).map((item) => html`<option key=${item.id} value=${item.name}>${item.name}</option>`)}
+        </select></${Field}>
+        <${Field} label="Тип находки"><input name="find_type" defaultValue=${source.find_type || ""} /></${Field}>
+        <${Field} label="Количество"><input name="quantity" type="number" min="1" defaultValue=${source.quantity || 1} /></${Field}>
+        <${Field} label="North"><input name="north" type="number" step="0.001" defaultValue=${source.north ?? ""} /></${Field}>
+        <${Field} label="East"><input name="east" type="number" step="0.001" defaultValue=${source.east ?? ""} /></${Field}>
+        <${Field} label="Elev"><input name="elev" type="number" step="0.001" defaultValue=${source.elev ?? ""} /></${Field}>
+        <${Field} label="Глубина, см"><input name="depth_cm" type="number" step="0.1" defaultValue=${source.depth_cm ?? ""} /></${Field}>
+        <${Field} label="Длина, мм"><input name="length_mm" type="number" step="0.1" defaultValue=${source.length_mm ?? ""} /></${Field}>
+        <${Field} label="Ширина, мм"><input name="width_mm" type="number" step="0.1" defaultValue=${source.width_mm ?? ""} /></${Field}>
+        <${Field} label="Толщина, мм"><input name="thickness_mm" type="number" step="0.1" defaultValue=${source.thickness_mm ?? ""} /></${Field}>
+        <${Field} label="Способ измерения"><select name="measurement_method" defaultValue=${source.measurement_method || "none"} disabled=${!allow(user, 2)}>
+          ${Object.entries(METHOD_LABELS).map(([key, label]) => html`<option key=${key} value=${key}>${label}</option>`)}
+        </select></${Field}>
+        <${Field} label="Pt"><input name="pt" type="number" defaultValue=${source.pt ?? ""} /></${Field}>
+      </div>
+      <${Field} label="Описание"><textarea name="description" defaultValue=${source.description || ""}></textarea></${Field}>
+      <div className="filter-grid">
+        <${Field} label="Часть сосуда"><input name="vessel_part" defaultValue=${source.vessel_part || ""} /></${Field}>
+        <${Field} label="Орнамент"><input name="ornament" defaultValue=${source.ornament || ""} /></${Field}>
+        <${Field} label="Цвет поверхности"><input name="surface_color" defaultValue=${source.surface_color || ""} /></${Field}>
+        <${Field} label="Цвет в изломе"><input name="fracture_color" defaultValue=${source.fracture_color || ""} /></${Field}>
+        <${Field} label="Структура"><input name="fabric" defaultValue=${source.fabric || ""} /></${Field}>
+        <${Field} label="Примесь"><input name="temper" defaultValue=${source.temper || ""} /></${Field}>
+        <${Field} label="Обработка поверхности"><input name="surface_treatment" defaultValue=${source.surface_treatment || ""} /></${Field}>
+      </div>
+      <${Field} label="Примечание"><textarea name="note" defaultValue=${source.note || ""}></textarea></${Field}>
+      ${!allow(user, 2) ? html`<p className="muted">Перевод измерения в ручное доступен камеральному сотруднику и руководителю.</p>` : null}
+      ${isNew ? html`<p className="muted">Черновик формы хранится в этом браузере, пока запись не сохранена.</p>` : null}
+      <${ErrorText} error=${error} />
+      <div className="actions">
+        <button className="btn btn-gold" type="submit">Сохранить</button>
+        ${!isNew ? html`<button type="button" className="btn btn-line" onClick=${() => navigate(`/photo/${id}`)}>Фотоанализ</button>` : null}
+      </div>
+    </form>
+  </section>`;
 }
