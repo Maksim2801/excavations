@@ -49,7 +49,9 @@ def detect_in_image(image: np.ndarray) -> dict:
         {"x": float(best["x1"]), "y": float(best["y1"])},
         {"x": float(best["x2"]), "y": float(best["y2"])},
     ]
-    if best["changes"] >= 4:
+    if best.get("ambiguous"):
+        status = STATUS_MANUAL
+    elif best["changes"] >= 4:
         status = STATUS_DETECTED
     elif best["changes"] >= 2:
         status = STATUS_MANUAL
@@ -200,6 +202,7 @@ def _result(status: str, points: list[dict], confidence: float) -> dict:
     return {
         "status": status,
         "points": points,
+        "scale_points": points,
         "confidence": confidence,
         "message": _MESSAGES[status],
         "source": "opencv" if status != STATUS_NOT_FOUND else "none",
@@ -218,8 +221,27 @@ def _scan_lines(gray: np.ndarray, horizontal: bool) -> dict | None:
         changes_idx = np.flatnonzero(binary[1:] != binary[:-1])
         if len(changes_idx) < 2:
             continue
-        start = int(changes_idx[0])
+        start = int(changes_idx[0]) + 1
         end = int(changes_idx[-1])
+        ambiguous = False
+        # Thresholding sees only dark segments. Include a visible light end segment,
+        # otherwise the known length is divided by a truncated ruler (e.g. 375 vs 400 px).
+        intervals = np.diff(changes_idx)
+        if len(intervals) >= 5:
+            pitch = float(np.median(intervals))
+            regular = np.mean(np.abs(intervals - pitch) <= max(2, pitch * 0.2)) >= 0.8
+            bright_samples = [float(np.median(line[int(left)+1:int(right)+1]))
+                              for left, right in zip(changes_idx[:-1], changes_idx[1:])
+                              if not binary[int((left + right) // 2) + 1]]
+            if regular and bright_samples:
+                bright = float(np.median(bright_samples))
+                left, left_ambiguous = _bright_end(line, start - 1, -1, pitch, bright)
+                right, right_ambiguous = _bright_end(line, end + 1, 1, pitch, bright)
+                if left is not None:
+                    start = left
+                if right is not None:
+                    end = right
+                ambiguous = left_ambiguous or right_ambiguous
         span = end - start
         if span < min_span:
             continue
@@ -231,6 +253,7 @@ def _scan_lines(gray: np.ndarray, horizontal: bool) -> dict | None:
                 x1, y1, x2, y2 = index, start, index, end
             best = {
                 "score": score,
+                "ambiguous": ambiguous,
                 "changes": int(len(changes_idx)),
                 "span": span,
                 "x1": x1,
@@ -239,3 +262,28 @@ def _scan_lines(gray: np.ndarray, horizontal: bool) -> dict | None:
                 "y2": y2,
             }
     return best
+
+
+def _bright_end(line: np.ndarray, first: int, direction: int, pitch: float, bright: float):
+    """Locate a light end stripe only when its outer edge is visible.
+
+    If its tone merges with the background, don't claim an automatic calibration.
+    """
+    tolerance = 5
+    if first < 0 or first >= len(line) or abs(float(line[first]) - bright) > tolerance:
+        return None, False
+    samples = max(3, int(round(pitch * 1.6)))
+    run = 0
+    for offset in range(samples):
+        index = first + direction * offset
+        if not 0 <= index < len(line):
+            return None, True
+        if abs(float(line[index]) - bright) > tolerance:
+            # Demand a stable boundary rather than one noisy pixel.
+            following = [index + direction * step for step in range(3)]
+            if all(0 <= i < len(line) and abs(float(line[i]) - bright) > tolerance for i in following):
+                if 0.65 * pitch <= run <= 1.35 * pitch:
+                    return index - direction, False
+                return None, True
+        run += 1
+    return None, True

@@ -1,6 +1,6 @@
 import { html, useEffect, useState } from "./html.js";
 import { useQuery } from "../hooks/useQuery.js";
-import { dictionariesApi, excavationsApi, findingsApi, layersApi, uuid } from "../services/api.js";
+import { dictionariesApi, excavationsApi, findingsApi, layersApi, gnssApi, uuid } from "../services/api.js";
 import { useSession } from "./session.js";
 import { useRouter } from "./router.js";
 import { useWorkspace } from "./workspace.js";
@@ -10,7 +10,7 @@ import { Breadcrumbs, ErrorText, Field, SectionHeading, useDraft } from "./ui.js
 
 const BLANK = {
   excavation_id: "", layer_id: "", code: "", number: "", square: "", material: "", find_type: "",
-  description: "", north: "", east: "", elev: "", length_mm: "", width_mm: "", thickness_mm: "",
+  description: "", full_desc: "", gnss_point_id: "", north: "", east: "", elev: "", length_mm: "", width_mm: "", thickness_mm: "",
   quantity: 1, note: "", vessel_part: "", ornament: "", surface_color: "", fracture_color: "",
   fabric: "", temper: "", surface_treatment: "", depth_cm: "", pt: "", measurement_method: "none",
 };
@@ -22,12 +22,16 @@ export function FindingPage({ id }) {
   const workspace = useWorkspace();
   const { setStatus } = useStatus();
   const [error, setError] = useState(null);
-  const [key] = useState(() => uuid());
+  const [saving, setSaving] = useState(false);
   const loaded = useQuery(() => (isNew ? Promise.resolve(null) : findingsApi.get(id)), [id]);
   const excavations = useQuery(() => excavationsApi.list(), []);
-  const [draft, setDraft, clearDraft] = useDraft("finding-draft", { ...BLANK, excavation_id: workspace.excavationId, layer_id: workspace.layerId });
+  const [draft, setDraft, clearDraft] = useDraft(`finding-draft:${user.id}:${id}`, { ...BLANK, _requestKey: uuid(), excavation_id: workspace.excavationId, layer_id: workspace.layerId });
   const source = isNew ? draft : (loaded.data || BLANK);
-  const layers = useQuery(() => (source.excavation_id ? layersApi.list(source.excavation_id) : Promise.resolve([])), [source.excavation_id]);
+  const [excavationId, setExcavationId] = useState(source.excavation_id || "");
+  useEffect(() => { if (source.excavation_id) setExcavationId(String(source.excavation_id)); }, [loaded.data]);
+  const [autoNumber, setAutoNumber] = useState(isNew && !draft.code);
+  const points = useQuery(() => excavationId ? gnssApi.list(excavationId) : Promise.resolve([]), [excavationId]);
+  const layers = useQuery(() => (excavationId ? layersApi.list(excavationId) : Promise.resolve([])), [excavationId]);
   const dictionaries = useQuery(() => dictionariesApi.list(), []);
 
   useEffect(() => {
@@ -42,19 +46,30 @@ export function FindingPage({ id }) {
 
   const save = async (event) => {
     event.preventDefault();
+    if (saving) return;
+    setSaving(true);
     const data = Object.fromEntries(new FormData(event.target).entries());
     Object.keys(data).forEach((key) => { if (data[key] === "") delete data[key]; });
-    if (!allow(user, 2)) delete data.measurement_method;
+    if (!allow(user, 2) || data.measurement_method === "photo") {
+      delete data.measurement_method;
+      // A field archaeologist can edit text without overwriting accepted photo dimensions.
+      if (!isNew && source.measurement_method === "photo") {
+        delete data.length_mm; delete data.width_mm; delete data.thickness_mm;
+      }
+    }
+    if (!isNew && source.measurement_method === "photo" && data.measurement_method !== "manual") { delete data.length_mm; delete data.width_mm; delete data.thickness_mm; }
+    if (!isNew && !data.gnss_point_id) data.gnss_point_id = null;
+    if (isNew && autoNumber) { delete data.code; delete data.number; }
     setError(null);
     try {
-      const saved = isNew ? await findingsApi.create(data, key) : await findingsApi.update(id, data);
+      const saved = isNew ? await findingsApi.create(data, draft._requestKey) : await findingsApi.update(id, data);
       if (isNew) clearDraft();
       setStatus("Находка сохранена", "ok");
       navigate(`/findings/${saved.id}`);
     } catch (err) {
       setError(err);
       setStatus(err.message, "error");
-    }
+    } finally { setSaving(false); }
   };
 
   if (!isNew && loaded.loading) return html`<p>Загрузка…</p>`;
@@ -64,8 +79,10 @@ export function FindingPage({ id }) {
     <${Breadcrumbs} items=${[{ label: "Опись", href: "/inventory" }, { label: isNew ? "Новая находка" : `${source.code}-${source.number}` }]} />
     <${SectionHeading}>${isNew ? "Новая находка" : "Карточка находки"}<//>
     <form className="stack card-frame" key=${isNew ? "new" : source.id} onSubmit=${save} onChange=${onChange}>
+      ${isNew ? html`<label><input type="checkbox" checked=${autoNumber} onChange=${(e) => setAutoNumber(e.target.checked)} /> Автоматический код и номер при сохранении</label>` : null}
       <div className="filter-grid">
-        <${Field} label="Раскоп"><select name="excavation_id" defaultValue=${source.excavation_id || ""} required onChange=${(event) => { if (isNew) setDraft((current) => ({ ...current, excavation_id: event.target.value })); }}>
+        <${Field} label="Раскоп"><select name="excavation_id" defaultValue=${source.excavation_id || ""} required onChange=${(event) => { setExcavationId(event.target.value); if (isNew) setDraft((current) => ({ ...current, excavation_id: event.target.value, layer_id: "", gnss_point_id: "" }));
+          const form = event.target.form; form.elements.layer_id.value = ""; if (form.elements.gnss_point_id) form.elements.gnss_point_id.value = ""; }}>
           <option value="">Выберите</option>
           ${(excavations.data || []).map((item) => html`<option key=${item.id} value=${item.id}>${item.code} (${item.year})</option>`)}
         </select></${Field}>
@@ -73,8 +90,8 @@ export function FindingPage({ id }) {
           <option value="">Без пласта</option>
           ${(layers.data || []).map((item) => html`<option key=${item.id} value=${item.id}>Пласт ${item.number}</option>`)}
         </select></${Field}>
-        <${Field} label="Код"><input name="code" required defaultValue=${source.code || ""} /></${Field}>
-        <${Field} label="Номер"><input name="number" type="number" min="1" required defaultValue=${source.number || ""} /></${Field}>
+        <${Field} label="Код"><input name="code" disabled=${isNew && autoNumber} required=${!autoNumber} defaultValue=${source.code || ""} /></${Field}>
+        <${Field} label="Номер"><input name="number" type="number" min="1" disabled=${isNew && autoNumber} required=${!autoNumber} defaultValue=${source.number || ""} /></${Field}>
         <${Field} label="Квадрат"><input name="square" defaultValue=${source.square || ""} /></${Field}>
         <${Field} label="Материал"><select name="material" defaultValue=${source.material || ""}>
           <option value="">Не указан</option>
@@ -82,9 +99,16 @@ export function FindingPage({ id }) {
         </select></${Field}>
         <${Field} label="Тип находки"><input name="find_type" defaultValue=${source.find_type || ""} /></${Field}>
         <${Field} label="Количество"><input name="quantity" type="number" min="1" defaultValue=${source.quantity || 1} /></${Field}>
-        <${Field} label="North"><input name="north" type="number" step="0.001" defaultValue=${source.north ?? ""} /></${Field}>
-        <${Field} label="East"><input name="east" type="number" step="0.001" defaultValue=${source.east ?? ""} /></${Field}>
-        <${Field} label="Elev"><input name="elev" type="number" step="0.001" defaultValue=${source.elev ?? ""} /></${Field}>
+        <${Field} label="Координаты из GNSS"><select name="gnss_point_id" defaultValue=${source.gnss_point_id || ""} onChange=${(e) => {
+          const point = (points.data || []).find((item) => String(item.id) === e.target.value);
+          if (point) {
+            for (const key of ["north", "east", "elev"]) e.target.form.elements[key].value = point[key];
+            if (isNew) setDraft((current) => ({ ...current, gnss_point_id: point.id, north: point.north, east: point.east, elev: point.elev }));
+          }
+        }}><option value="">Ручной ввод</option>${(points.data || []).map((point) => html`<option key=${point.id} value=${point.id}>#${point.id} ${point.comment || point.point_type_label || point.point_type}</option>`)}</select></${Field}>
+        <${Field} label="North"><input name="north" type="number" step="0.001" onInput=${(e) => { e.target.form.elements.gnss_point_id.value = ""; if (isNew) setDraft((d) => ({ ...d, gnss_point_id: "" })); }} defaultValue=${source.north ?? ""} /></${Field}>
+        <${Field} label="East"><input name="east" type="number" step="0.001" onInput=${(e) => { e.target.form.elements.gnss_point_id.value = ""; if (isNew) setDraft((d) => ({ ...d, gnss_point_id: "" })); }} defaultValue=${source.east ?? ""} /></${Field}>
+        <${Field} label="Elev"><input name="elev" type="number" step="0.001" onInput=${(e) => { e.target.form.elements.gnss_point_id.value = ""; if (isNew) setDraft((d) => ({ ...d, gnss_point_id: "" })); }} defaultValue=${source.elev ?? ""} /></${Field}>
         <${Field} label="Глубина, см"><input name="depth_cm" type="number" step="0.1" defaultValue=${source.depth_cm ?? ""} /></${Field}>
         <${Field} label="Длина, мм"><input name="length_mm" type="number" step="0.1" defaultValue=${source.length_mm ?? ""} /></${Field}>
         <${Field} label="Ширина, мм"><input name="width_mm" type="number" step="0.1" defaultValue=${source.width_mm ?? ""} /></${Field}>
@@ -94,7 +118,8 @@ export function FindingPage({ id }) {
         </select></${Field}>
         <${Field} label="Pt"><input name="pt" type="number" defaultValue=${source.pt ?? ""} /></${Field}>
       </div>
-      <${Field} label="Описание"><textarea name="description" defaultValue=${source.description || ""}></textarea></${Field}>
+      <${Field} label="Краткое описание"><textarea name="description" defaultValue=${source.description || ""}></textarea></${Field}>
+      <${Field} label="Развёрнутое описание"><textarea name="full_desc" defaultValue=${source.full_desc || ""}></textarea></${Field}>
       <div className="filter-grid">
         <${Field} label="Часть сосуда"><input name="vessel_part" defaultValue=${source.vessel_part || ""} /></${Field}>
         <${Field} label="Орнамент"><input name="ornament" defaultValue=${source.ornament || ""} /></${Field}>
@@ -109,7 +134,7 @@ export function FindingPage({ id }) {
       ${isNew ? html`<p className="muted">Черновик формы хранится в этом браузере, пока запись не сохранена.</p>` : null}
       <${ErrorText} error=${error} />
       <div className="actions">
-        <button className="btn btn-gold" type="submit">Сохранить</button>
+        <button className="btn btn-gold" type="submit" disabled=${saving}>${saving ? "Сохранение…" : "Сохранить"}</button>
         ${!isNew ? html`<button type="button" className="btn btn-line" onClick=${() => navigate(`/photo/${id}`)}>Фотоанализ</button>` : null}
       </div>
     </form>

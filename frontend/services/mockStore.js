@@ -466,6 +466,12 @@ function planPayload(db, query) {
   };
 }
 
+function mmToCm(value) {
+  if (value == null || value === "") return "";
+  const text = (Number(value) / 10).toFixed(1).replace(/\.0$/, "").replace(".", ",");
+  return text;
+}
+
 function reportRows(db, body) {
   const query = new URLSearchParams();
   ["excavation_id", "layer_id", "code", "material", "square", "find_type", "measurement_method", "number_from", "number_to", "elev_from", "elev_to"].forEach((key) => {
@@ -476,6 +482,65 @@ function reportRows(db, body) {
   query.set("sort", body.sort || "number");
   query.set("order", body.order || "asc");
   const listed = listFindings(db, query).items;
+  const layout = body.layout || "working";
+  if (layout === "album") {
+    if (!body.excavation_id) throw new ApiError(400, "Для альбома иллюстраций укажите раскоп");
+    const excavation = db.excavations.find((item) => item.id === Number(body.excavation_id));
+    const captions = [
+      { key: "plan", label: `Рис. 1. План раскопа ${excavation?.code || body.excavation_id}` },
+      ...listed.slice(0, 20).map((item, index) => ({
+        key: `f${item.id}`,
+        label: `Рис. ${index + 2}. ${item.code}-${item.number}. ${item.description || item.find_type || ""}`.trim(),
+      })),
+    ];
+    return {
+      columns: [{ key: "n", label: "№" }, { key: "caption", label: "Подпись" }],
+      rows: captions.map((item, index) => ({ id: index + 1, cells: [String(index + 1), item.label] })),
+      total: captions.length,
+      layout: "album",
+      title: body.title || `Альбом иллюстраций. Раскоп ${excavation?.code || ""}`,
+    };
+  }
+  if (layout === "field" || layout === "collection") {
+    const fieldColumns = [
+      { key: "seq", label: "№ п/п" },
+      { key: "name", label: "Наименование предмета" },
+      { key: "quantity", label: "Кол-во ед.хр" },
+      { key: "material", label: "Материал" },
+      { key: "square", label: "Квадрат" },
+      { key: "layer", label: "Пласт" },
+      { key: "note", label: "Прим." },
+    ];
+    const collectionColumns = [
+      { key: "seq", label: "№ п/п" },
+      { key: "name", label: "Наименование" },
+      { key: "sizes", label: "Размеры" },
+      { key: "fracture_color", label: "Цвет в изломе" },
+      { key: "ornament", label: "Орнамент" },
+      { key: "surface_treatment", label: "Обработка поверхности" },
+      { key: "field_number", label: "№ по полевой описи" },
+      { key: "quantity", label: "Количество ед. хр." },
+      { key: "material", label: "Материал" },
+      { key: "condition", label: "Сохранность" },
+      { key: "square", label: "Квадрат" },
+      { key: "layer", label: "Пласт" },
+      { key: "field_cipher", label: "Полевой шифр" },
+      { key: "note", label: "Примечание" },
+    ];
+    const columns = layout === "field" ? fieldColumns : collectionColumns;
+    const rows = listed.map((item, index) => {
+      const full = db.findings.find((row) => row.id === item.id);
+      const name = item.description || item.find_type || "";
+      const layer = item.layer_number ?? "";
+      const sizes = [mmToCm(item.length_mm), mmToCm(item.width_mm), mmToCm(item.thickness_mm)].filter(Boolean).join("×");
+      const cipher = layer ? `${item.excavation_code}/${layer}/${item.number}` : `${item.excavation_code}/${item.number}`;
+      const cells = layout === "field"
+        ? [String(index + 1), name, String(full?.quantity ?? 1), item.material ?? "", item.square ?? "", layer, full?.note ?? ""]
+        : [String(index + 1), name, sizes, full?.fracture_color ?? "", full?.ornament ?? "", full?.surface_treatment ?? "", String(item.number), String(full?.quantity ?? 1), item.material ?? "", "", item.square ?? "", layer, cipher, full?.note ?? ""];
+      return { id: item.id, cells };
+    });
+    return { columns, rows, total: rows.length, layout };
+  }
   const columns = body.preset === "extended" ? EXTENDED_COLUMNS : (body.columns?.length ? body.columns : MINIMAL_COLUMNS);
   const rows = listed.map((item) => {
     const full = db.findings.find((row) => row.id === item.id);
@@ -506,7 +571,7 @@ function reportRows(db, body) {
     };
     return { id: item.id, cells: columns.map((key) => values[key] ?? "") };
   });
-  return { columns: columns.map((key) => ({ key, label: COLUMN_LABELS[key] || key })), rows, total: rows.length };
+  return { columns: columns.map((key) => ({ key, label: COLUMN_LABELS[key] || key })), rows, total: rows.length, layout: "working" };
 }
 
 function parseCsv(text) {
@@ -881,7 +946,18 @@ export function mockRequest(path, options = {}) {
         return { status: "detected", scale_points: [{ x: 100, y: 78 }, { x: 500, y: 78 }], message: "Найдена контрастная полоса масштаба" };
       }
       if (photoMatch[2] === "analyze" && method === "POST") {
-        return { status: photo.has_scale ? "detected" : "marker_not_found", object_points: [{ x: 160, y: 240 }, { x: 460, y: 240 }] };
+        if (!photo.has_scale) {
+          return { status: "marker_not_found", scale_points: [], length_points: [], width_points: [], message: "Маркер масштаба не найден" };
+        }
+        return {
+          status: "detected",
+          scale_points: [{ x: 100, y: 78 }, { x: 500, y: 78 }],
+          length_points: [{ x: 160, y: 240 }, { x: 460, y: 240 }],
+          width_points: [{ x: 310, y: 180 }, { x: 310, y: 300 }],
+          length_mm: 75,
+          width_mm: 30,
+          message: "Маркер и контур предмета найдены автоматически. Проверьте линии и нажмите «Принять».",
+        };
       }
       if (method === "DELETE") {
         guard(user, 1);

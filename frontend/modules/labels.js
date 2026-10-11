@@ -49,7 +49,8 @@ export const COLUMN_LABELS = {
   length_mm: "Длина, мм",
   width_mm: "Ширина, мм",
   thickness_mm: "Толщина, мм",
-  description: "Описание",
+  description: "Краткое описание",
+  full_desc: "Развёрнутое описание",
   find_type: "Тип находки",
   quantity: "Количество",
   measurement_method: "Способ измерения",
@@ -63,13 +64,13 @@ export const COLUMN_LABELS = {
 };
 
 export const MINIMAL_COLUMNS = [
-  "code", "number", "excavation", "layer", "square", "material",
+  "code", "number", "description", "quantity", "note", "excavation", "layer", "square", "material",
   "north", "east", "elev", "length_mm", "width_mm", "thickness_mm",
 ];
 
 export const EXTENDED_COLUMNS = MINIMAL_COLUMNS.concat([
-  "description", "find_type", "quantity", "measurement_method", "photo_present",
-  "vessel_part", "ornament", "surface_color", "note", "pt", "depth_cm",
+  "full_desc", "find_type", "measurement_method", "photo_present",
+  "vessel_part", "ornament", "surface_color", "pt", "depth_cm",
 ]);
 
 export const MATERIAL_COLORS = {

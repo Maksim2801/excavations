@@ -61,6 +61,9 @@ ISSUE_INCOMPLETE = "incomplete"
 MINIMAL_REPORT_COLUMNS = [
     "code",
     "number",
+    "description",
+    "quantity",
+    "note",
     "excavation",
     "layer",
     "square",
@@ -73,15 +76,13 @@ MINIMAL_REPORT_COLUMNS = [
     "thickness_mm",
 ]
 EXTENDED_REPORT_COLUMNS = MINIMAL_REPORT_COLUMNS + [
-    "description",
+    "full_desc",
     "find_type",
-    "quantity",
     "measurement_method",
     "photo_present",
     "vessel_part",
     "ornament",
     "surface_color",
-    "note",
     "pt",
     "depth_cm",
 ]
@@ -99,6 +100,7 @@ COLUMN_LABELS = {
     "length_mm": "Длина, мм",
     "width_mm": "Ширина, мм",
     "thickness_mm": "Толщина, мм",
+    "full_desc": "Развёрнутое описание",
     "description": "Описание",
     "find_type": "Тип находки",
     "quantity": "Количество",

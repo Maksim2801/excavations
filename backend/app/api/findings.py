@@ -1,7 +1,9 @@
+from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header
 from fastapi.encoders import jsonable_encoder
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user, require_camera, require_field
@@ -39,6 +41,8 @@ def get_findings(
     elev_from: float | None = None,
     elev_to: float | None = None,
     q: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
     sort: str = "code",
     order: str = "asc",
     page: int = 1,
@@ -62,6 +66,8 @@ def get_findings(
             "elev_from": elev_from,
             "elev_to": elev_to,
             "q": q,
+            "date_from": date_from,
+            "date_to": date_to,
             "sort": sort,
             "order": order,
             "page": page,
@@ -75,13 +81,17 @@ def post_finding(
     data: FindingIn,
     actor: User = Depends(require_field),
     db: Session = Depends(get_db),
-    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key", max_length=128)] = None,
 ):
-    cached = replay(db, actor.id, "POST /api/findings", idempotency_key)
+    if idempotency_key:
+        # Hold the request lock until both finding and replay record are committed.
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": f"finding:{actor.id}:{idempotency_key}"})
+    cached = replay(db, actor.id, "POST /api/findings", idempotency_key, data.model_dump())
     if cached:
         return cached
-    payload = jsonable_encoder(create_finding(db, data, actor))
-    remember(db, actor.id, "POST /api/findings", idempotency_key, 200, payload)
+    payload = jsonable_encoder(create_finding(db, data, actor, commit=False))
+    remember(db, actor.id, "POST /api/findings", idempotency_key, 200, payload, data.model_dump())
+    db.commit()
     return payload
 
 

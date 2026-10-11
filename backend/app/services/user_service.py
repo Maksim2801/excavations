@@ -1,14 +1,15 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.auth.security import hash_password, verify_password
 from app.constants import ROLE_FIELD, ROLE_LABELS, ROLE_SUPERVISOR, ROLES
 from app.errors import AppError
-from app.models import User
+from app.models import User, Excavation, ExcavationMember
 from app.services.audit_service import write_audit
 
 
 def user_dict(user: User) -> dict:
     return {
+        "excavation_ids": [row.excavation_id for row in object_session(user).query(ExcavationMember).filter_by(user_id=user.id).all()] if object_session(user) else [],
         "id": user.id,
         "username": user.username,
         "email": user.email,
@@ -86,6 +87,13 @@ def update_user(db: Session, user_id: int, data, actor: User) -> dict:
     if user is None:
         raise AppError(404, "Пользователь не найден")
     payload = data.model_dump(exclude_unset=True)
+    if payload.get("excavation_ids") is not None:
+        ids = set(payload["excavation_ids"])
+        if ids and db.query(Excavation).filter(Excavation.id.in_(ids)).count() != len(ids):
+            raise AppError(400, "Один из раскопов не существует")
+        db.query(ExcavationMember).filter_by(user_id=user.id).delete()
+        for excavation_id in ids:
+            db.add(ExcavationMember(user_id=user.id, excavation_id=excavation_id))
     if "role" in payload and payload["role"] is not None:
         if payload["role"] not in ROLES:
             raise AppError(400, "Неизвестная роль")

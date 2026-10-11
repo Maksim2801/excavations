@@ -2,6 +2,11 @@
   "name": "excavations",
   "private": true,
   "scripts": {
-    "stagewise": "npx --yes stagewise@0.11.1 -b"
+    "stagewise": "npx --yes stagewise@0.11.1 -b",
+    "test:unit": "node tests/report-state.test.mjs",
+    "test:browser": "node tests/browser.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
   }
 }

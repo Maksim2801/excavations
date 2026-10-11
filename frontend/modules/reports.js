@@ -2,133 +2,110 @@ import { html, useState } from "./html.js";
 import { useQuery } from "../hooks/useQuery.js";
 import { dictionariesApi, excavationsApi, layersApi, reportsApi } from "../services/api.js";
 import { useSession } from "./session.js";
+import { useRouter } from "./router.js";
 import { useWorkspace } from "./workspace.js";
 import { useStatus } from "./status.js";
-import { COLUMN_LABELS, EXTENDED_COLUMNS, MINIMAL_COLUMNS, allow } from "./labels.js";
+import { COLUMN_LABELS, EXTENDED_COLUMNS, MINIMAL_COLUMNS, METHOD_LABELS, allow } from "./labels.js";
+import { cleanReport, reportFromURL, restoreTemplate, META, SORT_KEYS, LAYOUTS } from "./reportState.js";
 import { Breadcrumbs, ErrorText, Field, SectionHeading } from "./ui.js";
-
-const COLUMNS = Object.entries(COLUMN_LABELS);
 
 export function ReportsPage() {
   const { user } = useSession();
+  const { search } = useRouter();
   const workspace = useWorkspace();
   const { setStatus } = useStatus();
-  const [columns, setColumns] = useState(MINIMAL_COLUMNS);
+  const [form, setForm] = useState(() => ({ excavation_id: workspace.excavationId, layer_id: workspace.layerId, title: "", layout: "working", sort: "number", order: "asc", columns: MINIMAL_COLUMNS, ...reportFromURL(search) }));
   const [preview, setPreview] = useState(null);
-  const [title, setTitle] = useState("Полевая опись");
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
   const excavations = useQuery(() => excavationsApi.list(), []);
   const dictionaries = useQuery(() => dictionariesApi.list(), []);
   const templates = useQuery(() => reportsApi.templates(), []);
   const reports = useQuery(() => reportsApi.list(), []);
-  const [excavationId, setExcavationId] = useState(workspace.excavationId);
-  const layers = useQuery(() => (excavationId ? layersApi.list(excavationId) : Promise.resolve([])), [excavationId]);
-
-  const payloadFrom = (form) => {
-    const data = Object.fromEntries(new FormData(form).entries());
-    Object.keys(data).forEach((key) => { if (data[key] === "") delete data[key]; });
-    return { ...data, columns, title, preset: columns.join() === EXTENDED_COLUMNS.join() ? "extended" : "minimal" };
+  const layers = useQuery(() => form.excavation_id ? layersApi.list(form.excavation_id) : Promise.resolve([]), [form.excavation_id]);
+  const columns = form.columns || MINIMAL_COLUMNS;
+  const layout = form.layout || "working";
+  const formal = layout === "field" || layout === "collection";
+  const album = layout === "album";
+  const working = layout === "working";
+  const change = (key, value) => { setForm((current) => ({ ...current, [key]: value, ...(key === "excavation_id" ? { layer_id: "" } : {}) })); setPreview(null); };
+  const payload = () => cleanReport(form);
+  const perform = async (fn) => {
+    setBusy(true); setError(null);
+    try { await fn(); } catch (err) { setError(err); setStatus(err.message, "error"); }
+    finally { setBusy(false); }
   };
-
-  const build = async (event) => {
-    event.preventDefault();
-    try {
-      const data = await reportsApi.preview(payloadFrom(event.target));
-      setPreview(data);
-      setStatus(`В описи ${data.total} записей`, "ok");
-    } catch (error) {
-      setStatus(error.message, "error");
-    }
-  };
-
-  const run = async (format) => {
-    const form = document.getElementById("report-form");
-    const body = { ...payloadFrom(form), format };
-    try {
-      if (format === "print") {
-        await reportsApi.print(body);
-        setStatus("Печать открыта", "ok");
-        return;
-      }
-      const reportId = await reportsApi.exportFile(body);
-      if (format === "pdf" && reportId?.preview) await reportsApi.print({ ...body, title });
-      setStatus(format === "pdf" && reportId?.preview ? "PDF открыт через печать" : format === "pdf" ? "Файл PDF сохранён" : "Файл Excel сохранён", "ok");
+  const textField = (key, label, type = "text") => html`<${Field} key=${key} label=${label}><input type=${type} step=${type === "number" ? "any" : undefined} value=${form[key] ?? ""} onInput=${(e) => change(key, e.target.value)} /></${Field}>`;
+  const canExport = allow(user, 2);
+  const run = (format) => perform(async () => {
+    if (format === "print") await reportsApi.print(payload());
+    else {
+      const result = await reportsApi.exportFile({ ...payload(), format });
+      if (result?.preview) await reportsApi.print(payload());
       reports.reload();
-    } catch (error) {
-      setStatus(error.message, "error");
     }
-  };
-
+    setStatus(format === "print" ? "Открыта печать" : (album ? "Альбом сформирован" : "Опись сформирована"), "ok");
+  });
   return html`<section>
     <${Breadcrumbs} items=${[{ label: "Опись", href: "/inventory" }, { label: "Отчёты" }]} />
     <${SectionHeading}>Отчёты<//>
-    ${allow(user, 2) ? null : html`<p>Выгружать описи могут камеральный сотрудник и руководитель.</p>`}
-    <form id="report-form" className="stack" onSubmit=${build}>
+    <${ErrorText} error=${error || reports.error} />
+    <form className="stack" onSubmit=${(e) => { e.preventDefault(); perform(async () => setPreview(await reportsApi.preview(payload()))); }}>
+      ${form.ids ? html`<p>Экспорт отмеченных записей (${form.ids.length}) с учётом фильтров. <button type="button" className="btn btn-text" onClick=${() => change("ids", undefined)}>Все записи по фильтрам</button></p>` : null}
+      <div className="actions">
+        ${Object.entries(LAYOUTS).map(([key, label]) => html`<button type="button" key=${key} className=${"btn " + (layout === key ? "btn-gold" : "btn-line")} onClick=${() => change("layout", key)}>${label}</button>`)}
+      </div>
       <div className="filter-grid">
-        <${Field} label="Раскоп"><select name="excavation_id" value=${excavationId} onChange=${(event) => setExcavationId(event.target.value)}>
-          <option value="">Все</option>
-          ${(excavations.data || []).map((item) => html`<option key=${item.id} value=${item.id}>${item.code} (${item.year})</option>`)}
-        </select></${Field}>
-        <${Field} label="Пласт"><select name="layer_id" defaultValue=${workspace.layerId}>
-          <option value="">Все</option>
-          ${(layers.data || []).map((item) => html`<option key=${item.id} value=${item.id}>Пласт ${item.number}</option>`)}
-        </select></${Field}>
-        <${Field} label="Квадрат"><input name="square" /></${Field}>
-        <${Field} label="Материал"><select name="material">
-          <option value="">Все</option>
-          ${(dictionaries.data?.materials || []).map((item) => html`<option key=${item.id} value=${item.name}>${item.name}</option>`)}
-        </select></${Field}>
-        <${Field} label="Тип находки"><input name="find_type" /></${Field}>
-        <${Field} label="Способ"><select name="measurement_method"><option value="">Все</option><option value="photo">по фото</option><option value="manual">ручное</option><option value="none">не указан</option></select></${Field}>
-        <${Field} label="Номер от"><input name="number_from" type="number" /></${Field}>
-        <${Field} label="Номер до"><input name="number_to" type="number" /></${Field}>
-        <${Field} label="Elev от"><input name="elev_from" type="number" step="0.001" /></${Field}>
-        <${Field} label="Elev до"><input name="elev_to" type="number" step="0.001" /></${Field}>
-        <${Field} label="Сортировка"><select name="sort"><option value="number">по номеру</option><option value="square">по квадрату</option><option value="layer">по пласту</option><option value="code">по коду</option></select></${Field}>
-        <${Field} label="Заголовок"><input value=${title} onInput=${(event) => setTitle(event.target.value)} /></${Field}>
+        <${Field} label="Раскоп"><select value=${form.excavation_id || ""} onChange=${(e) => change("excavation_id", e.target.value)}><option value="">Все</option>${(excavations.data || []).map((ex) => html`<option key=${ex.id} value=${ex.id}>${ex.code} (${ex.year})</option>`)}</select></${Field}>
+        <${Field} label="Пласт"><select value=${form.layer_id || ""} onChange=${(e) => change("layer_id", e.target.value)}><option value="">Все</option>${(layers.data || []).map((layer) => html`<option key=${layer.id} value=${layer.id}>Пласт ${layer.number}</option>`)}</select></${Field}>
+        ${textField("q", "Поиск")}${textField("code", "Код")}${textField("square", "Квадрат")}${textField("find_type", "Тип находки")}
+        <${Field} label="Материал"><select value=${form.material || ""} onChange=${(e) => change("material", e.target.value)}><option value="">Все</option>${(dictionaries.data?.materials || []).map((item) => html`<option key=${item.id} value=${item.name}>${item.name}</option>`)}</select></${Field}>
+        <${Field} label="Способ"><select value=${form.measurement_method || ""} onChange=${(e) => change("measurement_method", e.target.value)}><option value="">Все</option>${Object.entries(METHOD_LABELS).map(([key, label]) => html`<option key=${key} value=${key}>${label}</option>`)}</select></${Field}>
+        <${Field} label="Фото"><select value=${form.photo_present === undefined ? "" : String(form.photo_present)} onChange=${(e) => change("photo_present", e.target.value)}><option value="">Все</option><option value="true">Есть</option><option value="false">Нет</option></select></${Field}>
+        ${textField("number_from", "Номер от", "number")}${textField("number_to", "Номер до", "number")}
+        ${textField("elev_from", "Elev от", "number")}${textField("elev_to", "Elev до", "number")}
+        ${textField("date_from", "Регистрация с (UTC)", "date")}${textField("date_to", "Регистрация по (UTC)", "date")}
+        <${Field} label="Сортировка"><select value=${form.sort || "number"} onChange=${(e) => change("sort", e.target.value)}>${SORT_KEYS.map((key) => html`<option key=${key} value=${key}>${COLUMN_LABELS[key] || ({ combined: "Пласт, квадрат, номер", record_status: "Состояние", created_at: "Дата регистрации" })[key] || key}</option>`)}</select></${Field}>
+        <${Field} label="Порядок"><select value=${form.order || "asc"} onChange=${(e) => change("order", e.target.value)}><option value="asc">По возрастанию</option><option value="desc">По убыванию</option></select></${Field}>
+        ${textField("title", "Заголовок (необязательно)")}
       </div>
+      ${!album ? html`<details><summary>Реквизиты описи</summary><div className="filter-grid">${Object.entries(META).map(([key, label]) => textField(key, label))}</div>
+        ${formal ? html`<p>Для официальной описи заполните номер, дату, блок «УТВЕРЖДАЮ» и реквизиты коллекции. Колонка «Сохранность» в коллекционной описи остаётся пустой для ручного заполнения.</p>` : null}
+      </details>` : html`<details open><summary>Реквизиты альбома (идут в титул и подписи)</summary><div className="filter-grid">
+        ${textField("title", "Заголовок альбома")}
+        ${textField("monument", "Памятник / ОАН")}
+        ${textField("place_time", "Место и время работ")}
+        ${textField("excavation_author", "Автор раскопок")}
+        ${textField("collection_name", "Коллекция")}
+        ${textField("dating", "Датировка")}
+        ${textField("culture", "Культурная принадлежность")}
+        ${textField("source", "Основание работ")}
+        ${textField("report_note", "Примечание")}
+      </div>
+        <p>Без реквизитов на страницах останутся только фото. Заполните памятник и место — подписи станут как в научном альбоме. Excel недоступен.</p>
+      </details>`}
+      ${working ? html`<div className="actions">
+        <button type="button" className="btn btn-line" onClick=${() => change("columns", MINIMAL_COLUMNS)}>Минимальная опись</button>
+        <button type="button" className="btn btn-line" onClick=${() => change("columns", EXTENDED_COLUMNS)}>Расширенная опись</button>
+        ${(templates.data || []).map((item) => html`<button type="button" key=${item.id} className="btn btn-text" onClick=${() => { setForm({ title: "", layout: "working", sort: "number", order: "asc", columns: MINIMAL_COLUMNS, ...restoreTemplate(item) }); setPreview(null); }}>${item.name}</button>`)}
+      </div>
+      <div className="checks">${Object.entries(COLUMN_LABELS).map(([key, label]) => html`<label key=${key}><input type="checkbox" aria-label=${`Колонка ${label}`} checked=${columns.includes(key)} disabled=${columns.length === 1 && columns.includes(key)} onChange=${(e) => change("columns", e.target.checked ? [...columns, key] : columns.filter((item) => item !== key))} /> ${label}</label>`)}</div>` : null}
+      ${formal ? html`<p>${layout === "field" ? "Фиксированные колонки полевой описи: наименование, количество, материал, квадрат, пласт, примечание." : "Фиксированные колонки коллекционной описи, включая размеры (см) и полевой шифр."}</p>` : null}
       <div className="actions">
-        <button type="button" className="btn btn-line" onClick=${() => setColumns(MINIMAL_COLUMNS)}>Минимальная опись</button>
-        <button type="button" className="btn btn-line" onClick=${() => setColumns(EXTENDED_COLUMNS)}>Расширенная опись</button>
-        ${(templates.data || []).map((item) => html`<button type="button" key=${item.id} className="btn btn-text" onClick=${() => setColumns(item.columns)}>${item.name}</button>`)}
-      </div>
-      <div className="checks">
-        ${COLUMNS.map(([key, label]) => html`<label key=${key} className="check"><input type="checkbox" checked=${columns.includes(key)} onChange=${(event) => setColumns((current) => event.target.checked ? current.concat(key) : current.filter((item) => item !== key))} /> ${label}</label>`)}
-      </div>
-      <div className="actions">
-        <button className="btn btn-gold" type="submit">Показать</button>
-        <button type="button" className="btn btn-line" onClick=${() => run("xlsx")}>Excel</button>
-        <button type="button" className="btn btn-line" onClick=${() => run("pdf")}>PDF</button>
-        <button type="button" className="btn btn-line" onClick=${() => run("print")}>Печать</button>
-        <button type="button" className="btn btn-text" onClick=${async () => {
-          const name = window.prompt("Название шаблона");
-          if (!name) return;
-          const form = document.getElementById("report-form");
-          await reportsApi.saveTemplate({ name, filters: payloadFrom(form), columns, sort: { sort: "number", order: "asc" } });
-          templates.reload();
-          setStatus("Шаблон сохранён", "ok");
-        }}>Сохранить шаблон</button>
+        <button disabled=${busy || !canExport} type="submit" className="btn btn-gold">Показать</button>
+        ${!album ? html`<button disabled=${busy || !canExport} type="button" className="btn btn-line" onClick=${() => run("xlsx")}>Excel</button>` : null}
+        <button disabled=${busy || !canExport} type="button" className="btn btn-line" onClick=${() => run("pdf")}>PDF</button>
+        <button disabled=${busy || !canExport} type="button" className="btn btn-line" onClick=${() => run("print")}>Печать</button>
+        ${!album ? html`<button disabled=${busy || !canExport} type="button" className="btn btn-text" onClick=${() => {
+          const name = window.prompt("Название шаблона"); if (!name?.trim()) return;
+          perform(async () => { const data = payload(); const { ids, ...reusable } = data; await reportsApi.saveTemplate({ name, filters: reusable, columns, sort: { sort: data.sort, order: data.order } }); templates.reload(); setStatus("Шаблон сохранён", "ok"); });
+        }}>Сохранить шаблон</button>` : null}
       </div>
     </form>
-    <${ErrorText} error=${reports.error} />
-    ${preview ? html`<div className="table-wrap"><table>
-      <thead><tr>${preview.columns.map((column) => html`<th key=${column.key}>${column.label}</th>`)}</tr></thead>
-      <tbody>${preview.rows.map((row, index) => {
-        const cells = Array.isArray(row) ? row : row.cells;
-        const key = row.id ?? index;
-        return html`<tr key=${key}>${cells.map((cell, cellIndex) => html`<td key=${cellIndex}>${cell}</td>`)}</tr>`;
-      })}</tbody>
-    </table></div>` : null}
-    <h3 className="subhead">Сформированные описи</h3>
-    <div className="table-wrap"><table>
-      <thead><tr><th>№</th><th>Название</th><th>Формат</th><th>Записей</th><th>Статус</th><th></th></tr></thead>
-      <tbody>
-        ${(reports.data || []).map((item) => html`<tr key=${item.id}>
-          <td>${item.id}</td><td>${item.title}</td><td>${item.format}</td>          <td>${item.total ?? "—"}</td>
-          <td>${item.confirmed || item.status === "confirmed" ? "подтверждена" : "черновик"}</td>
-          <td>${allow(user, 3) && !(item.confirmed || item.status === "confirmed") ? html`<button type="button" className="btn btn-text" onClick=${async () => { await reportsApi.confirm(item.id); setStatus("Опись подтверждена", "ok"); reports.reload(); }}>Подтвердить</button>` : null}</td>
-        </tr>`)}
-        ${!(reports.data || []).length ? html`<tr><td colspan="6">Описей ещё нет. Excel и PDF создают запись, которую подтверждает руководитель.</td></tr>` : null}
-      </tbody>
-    </table></div>
+    ${preview ? html`<div><p>Всего: ${preview.total}. Вид: ${LAYOUTS[preview.layout] || LAYOUTS[layout]}. ${album ? "Список иллюстраций для PDF/печати." : `Предпросмотр: первые ${preview.preview_limit || 100} записей; экспорт включает всю выборку.`}</p><div className="table-wrap"><table><thead><tr>${preview.columns.map((c) => html`<th key=${c.key}>${c.label}</th>`)}</tr></thead><tbody>${preview.rows.map((row, i) => html`<tr key=${i}>${(Array.isArray(row) ? row : row.cells).map((cell, j) => html`<td key=${j}>${cell}</td>`)}</tr>`)}</tbody></table></div></div>` : null}
+    <h3 className="subhead">Сформированные отчёты</h3>
+    <div className="table-wrap"><table><thead><tr><th>№</th><th>Название</th><th>Формат</th><th>Статус</th><th></th></tr></thead><tbody>
+      ${(reports.data || []).map((item) => html`<tr key=${item.id}><td>${item.id}</td><td>${item.title}</td><td>${item.format}</td><td>${item.confirmed || item.status === "confirmed" ? "подтверждена" : "черновик"}</td><td>${allow(user, 3) && !(item.confirmed || item.status === "confirmed") ? html`<button type="button" className="btn btn-text" onClick=${() => perform(async () => { await reportsApi.confirm(item.id); reports.reload(); })}>Подтвердить</button>` : null}</td></tr>`)}
+    </tbody></table></div>
   </section>`;
 }

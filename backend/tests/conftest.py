@@ -46,6 +46,8 @@ def postgres_up() -> bool:
 @pytest.fixture(scope="session")
 def database():
     if not postgres_up():
+        if os.environ.get("REQUIRE_POSTGIS_TESTS") == "1":
+            pytest.fail("PostgreSQL/PostGIS обязателен для этого прогона")
         pytest.skip("PostgreSQL/PostGIS недоступен")
     connection, url = _admin_connect()
     exists = connection.execute("SELECT 1 FROM pg_database WHERE datname = %s", (url.database,)).fetchone()

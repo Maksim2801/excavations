@@ -1,3 +1,4 @@
+from datetime import datetime, time, timedelta, timezone
 from sqlalchemy import or_
 from sqlalchemy.orm import Query, Session, contains_eager
 
@@ -14,6 +15,15 @@ def base_query(db: Session) -> Query:
 
 
 def apply_filters(query: Query, params: dict) -> Query:
+    if params.get("ids") is not None:
+        query = query.filter(Finding.id.in_(params["ids"]))
+    for key, is_end in (("date_from", False), ("date_to", True)):
+        value = params.get(key)
+        if value:
+            if isinstance(value, str):
+                value = datetime.fromisoformat(value).date()
+            boundary = datetime.combine(value, time.min, timezone.utc)
+            query = query.filter(Finding.created_at < boundary + timedelta(days=1)) if is_end else query.filter(Finding.created_at >= boundary)
     if params.get("excavation_id"):
         query = query.filter(Finding.excavation_id == params["excavation_id"])
     if params.get("layer_id"):
@@ -54,6 +64,14 @@ def apply_filters(query: Query, params: dict) -> Query:
 
 def apply_sort(query: Query, sort: str, order: str) -> Query:
     columns = {
+        "excavation": Excavation.code,
+        "material": Finding.material,
+        "measurement_method": Finding.measurement_method,
+        "photo_present": Finding.photo_present,
+        "record_status": Finding.record_status,
+        "created_at": Finding.created_at,
+        "description": Finding.description,
+        "find_type": Finding.find_type,
         "code": Finding.code,
         "number": Finding.number,
         "north": Finding.north,

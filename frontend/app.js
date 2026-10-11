@@ -47,17 +47,17 @@ function known(path) {
 }
 
 function Screen() {
-  const { path } = useRouter();
+  const { path, url } = useRouter();
   if (path === "/excavations") return html`<${ExcavationsPage} />`;
   if (/^\/excavations\/\d+$/.test(path)) return html`<${ExcavationPage} id=${Number(path.split("/")[2])} />`;
   if (path === "/layers") return html`<${LayersPage} />`;
-  if (path === "/inventory") return html`<${InventoryPage} />`;
-  if (path === "/findings/new") return html`<${FindingPage} id="new" />`;
-  if (/^\/findings\/\d+$/.test(path)) return html`<${FindingPage} id=${path.split("/")[2]} />`;
+  if (path === "/inventory") return html`<${InventoryPage} key=${url} />`;
+  if (path === "/findings/new") return html`<${FindingPage} key=${path} id="new" />`;
+  if (/^\/findings\/\d+$/.test(path)) return html`<${FindingPage} key=${path} id=${path.split("/")[2]} />`;
   if (path === "/plan") return html`<${PlanPage} />`;
   if (path === "/photo" || /^\/photo\/\d+$/.test(path)) return html`<${PhotoPage} findingId=${path.split("/")[2] || ""} />`;
   if (path === "/gnss") return html`<${GnssPage} />`;
-  if (path === "/reports") return html`<${ReportsPage} />`;
+  if (path === "/reports") return html`<${ReportsPage} key=${url} />`;
   if (path === "/dictionaries") return html`<${DictionariesPage} />`;
   if (path === "/users") return html`<${UsersPage} />`;
   return null;
@@ -97,3 +97,5 @@ root.render(html`
     <//>
   <//>
 `);
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});

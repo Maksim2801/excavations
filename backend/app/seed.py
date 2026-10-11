@@ -6,7 +6,7 @@ from datetime import date
 from PIL import Image
 
 from app.database import SessionLocal
-from app.models import Finding, GNSSPoint, Measurement, Photo, User
+from app.models import ExcavationMember, Finding, GNSSPoint, Measurement, Photo, User
 from app.schemas.io import ExcavationIn, FindingIn, LayerIn
 from app.services.domain import refresh_record_status
 from app.services.excavation_service import create_excavation
@@ -117,6 +117,8 @@ def seed() -> None:
                 ),
                 supervisor,
             )
+            db.add(ExcavationMember(user_id=field_user.id, excavation_id=excavation["id"]))
+            db.commit()
             excavations.append(excavation)
             numbers = {}
             for number, top, bottom, title, color, surface in item["layers"]:
@@ -128,7 +130,7 @@ def seed() -> None:
                         top_elev=top,
                         bottom_elev=bottom,
                         description=title,
-                        color=color,
+                        color=["#8c3a2f", "#2f6b4f", "#c4a574"][(number-1) % 3],
                         surface_description=surface,
                         inclusions="уголь, прокал" if number < 3 else None,
                         interpretation=title,

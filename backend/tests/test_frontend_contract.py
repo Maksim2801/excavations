@@ -21,5 +21,11 @@ def test_interface_contains_required_workflow():
     assert "Перейти к описи" in plan
     assert "Распознать маркер" in photo and "Принять" in photo
     assert "Excel" in reports and "PDF" in reports and "Печать" in reports
+    assert "Полевая опись" in reports or "LAYOUTS" in reports
+    state = read("frontend/modules/reportState.js")
+    assert "layout" in state and "approver_name" in state
+    assert "Полевая опись" in state and "Коллекционная опись" in state
+    assert "Альбом иллюстраций" in state
+    assert 'change("layout", key)' in reports or "layout" in reports
     assert "Подтвердить импорт" in gnss
     assert 'type="module"' in index

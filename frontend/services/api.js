@@ -1,12 +1,14 @@
 import { ApiError, mockRequest, resetMock } from "./mockStore.js";
 
+import { cacheRead, cachedRead, clearReadCache, connectionState } from "./offlineCache.js";
+
 const MODE_KEY = "arch_api_mode";
 const TOKEN_KEY = "arch_token";
 
 export { ApiError, resetMock };
 
 export function getMode() {
-  return localStorage.getItem(MODE_KEY) || "mock";
+  return localStorage.getItem(MODE_KEY) || "live";
 }
 
 export function setMode(mode) {
@@ -19,22 +21,16 @@ export function getToken() {
 }
 
 export function setToken(token) {
+  if (!token || token !== getToken()) clearReadCache();
   if (token) localStorage.setItem(TOKEN_KEY, token);
   else localStorage.removeItem(TOKEN_KEY);
 }
 
 export async function detectMode() {
-  const saved = localStorage.getItem(MODE_KEY);
-  if (saved === "mock" || saved === "live") return saved;
-  try {
-    const response = await fetch("/api/health", { cache: "no-store" });
-    const mode = response.ok ? "live" : "mock";
-    localStorage.setItem(MODE_KEY, mode);
-    return mode;
-  } catch {
-    localStorage.setItem(MODE_KEY, "mock");
-    return "mock";
-  }
+  // Demo is an explicit choice; network errors must never create a second dataset.
+  const mode = localStorage.getItem(MODE_KEY) === "mock" ? "mock" : "live";
+  localStorage.setItem(MODE_KEY, mode);
+  return mode;
 }
 
 async function live(path, options) {
@@ -52,11 +48,18 @@ async function live(path, options) {
   try {
     response = await fetch(path, { method: options.method || "GET", headers, body });
   } catch {
-    throw new ApiError(0, "Нет связи с сервером");
+    connectionState(true);
+    if (!options.method || options.method === "GET") {
+      const cached = cachedRead(token, path);
+      if (cached !== undefined) return cached;
+    }
+    throw new ApiError(0, "Нет связи с сервером. Данные не отправлены или ответ не получен. Повторите сохранение после восстановления связи.");
   }
+  connectionState(false);
   if (response.status === 204) return null;
   const contentType = response.headers.get("content-type") || "";
   if (!response.ok) {
+    if (response.status === 401 || response.status === 403) clearReadCache();
     let detail = "Ошибка запроса";
     if (contentType.includes("application/json")) {
       const data = await response.json().catch(() => ({}));
@@ -64,7 +67,12 @@ async function live(path, options) {
     }
     throw new ApiError(response.status, detail);
   }
-  if (contentType.includes("application/json")) return response.json();
+  if (contentType.includes("application/json")) {
+    const data = await response.json();
+    if (!options.method || options.method === "GET") cacheRead(token, path, data);
+    else if (!path.startsWith("/api/auth/")) clearReadCache();
+    return data;
+  }
   if (contentType.includes("text/html")) return response.text();
   return response.blob();
 }
@@ -152,6 +160,7 @@ export const photosApi = {
     return api("/api/photos", { method: "POST", body: { ...fields, original_name: file?.name || "photo.png" } });
   },
   detectScale: (id) => api(`/api/photos/${id}/detect-scale`, { method: "POST" }),
+  analyze: (id, scaleMm = 100) => api(`/api/photos/${id}/analyze?scale_mm=${encodeURIComponent(scaleMm)}`, { method: "POST" }),
   remove: (id) => api(`/api/photos/${id}`, { method: "DELETE" }),
 };
 
@@ -214,9 +223,11 @@ export const reportsApi = {
     return data.report_id;
   },
   async print(body) {
-    const html = await api("/api/reports/print", { method: "POST", body });
     const popup = window.open("", "_blank");
     if (!popup) throw new ApiError(0, "Браузер заблокировал окно печати");
+    let html;
+    try { html = await api("/api/reports/print", { method: "POST", body }); }
+    catch (error) { popup.close(); throw error; }
     popup.document.write(html);
     popup.document.close();
     popup.focus();

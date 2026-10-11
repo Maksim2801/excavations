@@ -14,6 +14,7 @@ from app.models.measurement import Measurement
 from app.models.photo import Photo
 from app.models.report import Report, ReportTemplate
 from app.models.user import User
+from app.models.membership import ExcavationMember
 
 __all__ = [
     "AuditLog",

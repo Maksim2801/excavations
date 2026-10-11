@@ -15,7 +15,14 @@ def _excavation(client, headers, code="T-1", year=2026):
         },
     )
     assert response.status_code == 200, response.text
-    return response.json()
+    excavation = response.json()
+    users = client.get("/api/users", headers=headers)
+    if users.status_code == 200:
+        for user in users.json():
+            if user["role"] == "field_archaeologist":
+                assigned = client.put(f"/api/users/{user['id']}", headers=headers, json={"excavation_ids": user.get("excavation_ids", []) + [excavation["id"]]})
+                assert assigned.status_code == 200
+    return excavation
 
 
 def _layer(client, headers, excavation_id, number=1, top=100.4, bottom=100.0):
@@ -263,3 +270,41 @@ def test_finding_cannot_use_foreign_layer(client, accounts):
         },
     )
     assert response.status_code == 400
+
+
+def test_field_is_limited_to_assigned_excavations(client, accounts):
+    own = _excavation(client, accounts["supervisor"], code="OWN")
+    other = _excavation(client, accounts["supervisor"], code="OTHER")
+    own_layer = _layer(client, accounts["supervisor"], own["id"])
+    other_layer = _layer(client, accounts["supervisor"], other["id"])
+    hidden = _finding(client, accounts["supervisor"], other["id"], other_layer["id"])
+    users = client.get("/api/users", headers=accounts["supervisor"]).json()
+    field = next(user for user in users if user["role"] == "field_archaeologist")
+    response = client.put(f"/api/users/{field['id']}", headers=accounts["supervisor"], json={"excavation_ids": [own["id"]]})
+    assert response.status_code == 200
+    assert [row["id"] for row in client.get("/api/excavations", headers=accounts["field"]).json()] == [own["id"]]
+    assert client.get("/api/findings", headers=accounts["field"]).json()["total"] == 0
+    assert client.get(f"/api/findings/{hidden['id']}", headers=accounts["field"]).status_code == 404
+    assert client.put(f"/api/findings/{hidden['id']}", headers=accounts["field"], json={"description": "Forbidden"}).status_code == 404
+    assert client.get(f"/api/plan?excavation_id={other['id']}", headers=accounts["field"]).status_code == 404
+    assert client.post("/api/findings", headers=accounts["field"], json={"excavation_id":other["id"]}).status_code == 404
+    created = client.post("/api/findings", headers=accounts["field"], json={"excavation_id":own["id"], "layer_id":own_layer["id"]})
+    assert created.status_code == 200, created.text
+    assert created.json()["code"].startswith("OWN-2026-")
+
+
+def test_export_selection_and_plan_layer_color(client, accounts):
+    excavation = _excavation(client, accounts["supervisor"])
+    layer = _layer(client, accounts["supervisor"], excavation["id"])
+    response = client.put(f"/api/layers/{layer['id']}", headers=accounts["supervisor"], json={"color":"#123456"})
+    assert response.status_code == 200
+    first = _finding(client, accounts["field"], excavation["id"], layer["id"], number=1)
+    _finding(client, accounts["field"], excavation["id"], layer["id"], number=2)
+    request = {"excavation_id":excavation["id"], "ids":[first["id"]], "photo_present":False, "q":"Фрагмент", "columns":["number"]}
+    response = client.post("/api/reports/findings", headers=accounts["camera"], json=request)
+    assert response.status_code == 200, response.text
+    assert response.json()["total"] == 1
+    assert response.json()["rows"] == [["1"]]
+    plan = client.get(f"/api/plan?excavation_id={excavation['id']}&color_by=layer", headers=accounts["field"])
+    assert plan.status_code == 200, plan.text
+    assert {point["color"] for point in plan.json()["points"]} == {"#123456"}

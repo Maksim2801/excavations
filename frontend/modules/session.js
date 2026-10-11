@@ -1,4 +1,5 @@
 import { createContext, html, useCallback, useContext, useEffect, useMemo, useState } from "./html.js";
+import { cacheRead } from "../services/offlineCache.js";
 import { authApi, detectMode, getMode, setMode, setToken } from "../services/api.js";
 
 const SessionContext = createContext(null);
@@ -16,8 +17,8 @@ export function SessionProvider({ children }) {
       setModeState(next);
       try {
         if (localStorage.getItem("arch_token")) setUser(await authApi.me());
-      } catch {
-        setToken("");
+      } catch (error) {
+        if (error.status !== 0) setToken("");
         setUser(null);
       }
       if (!cancel) setReady(true);
@@ -29,6 +30,7 @@ export function SessionProvider({ children }) {
 
   const applyAuth = useCallback((result) => {
     setToken(result.access_token);
+    cacheRead(result.access_token, "/api/auth/me", result.user);
     setUser(result.user);
   }, []);
 
@@ -36,6 +38,7 @@ export function SessionProvider({ children }) {
     try { await authApi.logout(); } catch { /* локальный выход всё равно завершает сессию */ }
     setToken("");
     setUser(null);
+    for (const key of Object.keys(sessionStorage)) if (key.startsWith("finding-draft:") || ["excavationId", "layerId"].includes(key)) sessionStorage.removeItem(key);
   }, []);
 
   const changeMode = useCallback((next) => {

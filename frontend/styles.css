@@ -175,6 +175,10 @@ tr.problem { background: #fbf6ef; }
 .legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 12px; }
 .legend i, .swatch { display: inline-block; width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px; }
 .photo-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 20px; }
+.photo-page .breadcrumbs { margin-bottom: 16px; }
+.photo-page .section-heading { margin: 0 0 10px; }
+.photo-filter-bar { margin: 0 0 18px; }
+.photo-actions { margin: 0 0 10px; }
 .checks { display: flex; flex-wrap: wrap; gap: 8px 16px; }
 .check { font-size: 14px; }
 

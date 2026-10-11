@@ -66,7 +66,7 @@ def build_plan(db: Session, excavation_id: int, layer_id: int | None, view: str,
                    f.measurement_method, f.photo_present, f.description,
                    ST_X(f.geom) AS east, ST_Y(f.geom) AS north, ST_Z(f.geom) AS elev,
                    ST_AsText(f.geom) AS wkt,
-                   l.number AS layer_number
+                   l.number AS layer_number, l.color AS layer_color
             FROM findings f
             LEFT JOIN layers l ON l.id = f.layer_id
             WHERE f.excavation_id = :eid
@@ -98,7 +98,7 @@ def build_plan(db: Session, excavation_id: int, layer_id: int | None, view: str,
         layer_number = row["layer_number"]
         if mode == "layer":
             key = f"Пласт {layer_number}" if layer_number is not None else "Без пласта"
-            color = palette[(int(layer_number) - 1) % len(palette)] if layer_number else "#8a8175"
+            color = row["layer_color"] or (palette[(int(layer_number) - 1) % len(palette)] if layer_number else "#8a8175")
         else:
             key = row["material"] or "без материала"
             color = materials.get(row["material"], "#8a8175")

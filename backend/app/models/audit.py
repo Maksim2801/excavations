@@ -32,4 +32,5 @@ class IdempotencyRecord(Base):
     endpoint: Mapped[str] = mapped_column(String(255))
     status_code: Mapped[int] = mapped_column(Integer)
     response_json: Mapped[str] = mapped_column(Text)
+    request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

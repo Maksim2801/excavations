@@ -1,10 +1,11 @@
 import json
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.constants import METHOD_MANUAL, METHOD_NONE, METHOD_PHOTO, ROLE_CAMERA, ROLE_FIELD, ROLE_SUPERVISOR
 from app.errors import AppError
-from app.models import Finding, Measurement, User
+from app.models import Excavation, Finding, GNSSPoint, Measurement, User
 from app.repositories.findings import apply_filters, apply_sort, base_query
 from app.services.audit_service import write_audit
 from app.services.domain import (
@@ -25,6 +26,7 @@ from app.utils.validators import validate_dimension
 TEXT_FIELDS = (
     "square",
     "description",
+    "full_desc",
     "find_type",
     "vessel_part",
     "ornament",
@@ -76,6 +78,10 @@ def finding_list_dict(finding: Finding) -> dict:
         "elev": finding.elev,
         "square": finding.square,
         "description": finding.description,
+        "short_desc": finding.description,
+        "full_desc": finding.full_desc,
+        "gnss_point_id": finding.gnss_point_id,
+        "auto_measured": finding.measurement_method == METHOD_PHOTO,
         "material": finding.material,
         "find_type": finding.find_type,
         "length_mm": finding.length_mm,
@@ -176,6 +182,8 @@ def _apply_text(finding: Finding, payload: dict) -> None:
 
 
 def list_findings(db: Session, params: dict) -> dict:
+    if params.get("date_from") and params.get("date_to") and params["date_from"] > params["date_to"]:
+        raise AppError(400, "Начало периода не может быть позже окончания")
     page = max(int(params.get("page") or 1), 1)
     page_size = min(max(int(params.get("page_size") or 50), 1), 200)
     query = apply_sort(apply_filters(base_query(db), params), params.get("sort") or "code", params.get("order") or "asc")
@@ -184,12 +192,15 @@ def list_findings(db: Session, params: dict) -> dict:
     return {"items": [finding_list_dict(item) for item in items], "total": total, "page": page, "page_size": page_size}
 
 
-def create_finding(db: Session, data, actor: User) -> dict:
+def create_finding(db: Session, data, actor: User, *, commit: bool = True) -> dict:
     excavation = get_excavation(db, data.excavation_id)
     ensure_writable(excavation)
     layer = bind_layer(db, excavation.id, data.layer_id)
-    code = data.code.strip()
-    _ensure_unique(db, excavation.id, code, data.number, data.pt)
+    # Serialize number allocation for this excavation, including concurrent requests.
+    db.query(Excavation).filter(Excavation.id == excavation.id).with_for_update().one()
+    number = data.number or ((db.query(func.max(Finding.number)).filter(Finding.excavation_id == excavation.id).scalar() or 0) + 1)
+    code = data.code.strip() if data.code else f"{excavation.code}-{excavation.year}-{number}"
+    _ensure_unique(db, excavation.id, code, number, data.pt)
     material = ensure_material(db, data.material)
     if data.quantity is not None and data.quantity < 1:
         raise AppError(400, "Количество должно быть положительным")
@@ -198,9 +209,10 @@ def create_finding(db: Session, data, actor: User) -> dict:
         layer_id=layer.id if layer else None,
         pt=data.pt,
         code=code,
-        number=data.number,
+        number=number,
         square=(data.square or None),
         description=data.description,
+        full_desc=data.full_desc,
         material=material,
         find_type=data.find_type,
         quantity=data.quantity or 1,
@@ -221,6 +233,8 @@ def create_finding(db: Session, data, actor: User) -> dict:
         layer=layer,
     )
     apply_coordinates(finding, data.north, data.east, data.elev)
+    if data.gnss_point_id is not None:
+        bind_gnss(db, finding, data.gnss_point_id)
     apply_dimensions(finding, data.length_mm, data.width_mm, data.thickness_mm)
     if any(value is not None for value in (finding.length_mm, finding.width_mm, finding.thickness_mm)):
         finding.measurement_method = METHOD_MANUAL
@@ -228,7 +242,10 @@ def create_finding(db: Session, data, actor: User) -> dict:
     db.add(finding)
     db.flush()
     write_audit(db, user_id=actor.id, action="create", entity="finding", entity_id=finding.id, details=finding.code)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return finding_detail_dict(_load_detail(db, finding.id))
 
 
@@ -237,6 +254,7 @@ def update_finding(db: Session, finding_id: int, data, actor: User) -> dict:
     ensure_writable(finding.excavation)
     payload = data.model_dump(exclude_unset=True)
     _guard_photo_dimensions(finding, payload, actor)
+    original_excavation_id = finding.excavation_id
     excavation_id = finding.excavation_id
     if "excavation_id" in payload and payload["excavation_id"] is not None:
         excavation = get_excavation(db, payload["excavation_id"])
@@ -250,6 +268,10 @@ def update_finding(db: Session, finding_id: int, data, actor: User) -> dict:
         finding.layer_id = layer.id if layer else None
     elif finding.layer_id is not None:
         bind_layer(db, excavation_id, finding.layer_id)
+    if excavation_id != original_excavation_id:
+        for photo in finding.photos:
+            photo.excavation_id = excavation_id
+            photo.layer_id = finding.layer_id
     code = payload.get("code", finding.code).strip()
     number = payload.get("number", finding.number)
     pt = payload["pt"] if "pt" in payload else finding.pt
@@ -276,6 +298,10 @@ def update_finding(db: Session, finding_id: int, data, actor: User) -> dict:
             payload.get("east", finding.east),
             payload.get("elev", finding.elev),
         )
+    if "gnss_point_id" in payload:
+        bind_gnss(db, finding, payload["gnss_point_id"])
+    elif any(field in payload for field in ("north", "east", "elev")) or excavation_id != original_excavation_id:
+        finding.gnss_point_id = None
     if any(field in payload for field in ("length_mm", "width_mm", "thickness_mm")):
         apply_dimensions(
             finding,
@@ -299,6 +325,7 @@ def update_coordinates(db: Session, finding_id: int, data, actor: User) -> dict:
     finding = get_finding(db, finding_id)
     ensure_writable(finding.excavation)
     apply_coordinates(finding, data.north, data.east, data.elev)
+    finding.gnss_point_id = None
     finding.updated_by_id = actor.id
     touch(finding)
     refresh_record_status(finding)
@@ -357,3 +384,14 @@ def delete_finding(db: Session, finding_id: int, actor: User) -> None:
     write_audit(db, user_id=actor.id, action="delete", entity="finding", entity_id=finding.id, details=finding.code)
     db.delete(finding)
     db.commit()
+
+
+def bind_gnss(db: Session, finding: Finding, point_id: int | None) -> None:
+    if point_id is None:
+        finding.gnss_point_id = None
+        return
+    point = db.get(GNSSPoint, point_id)
+    if point is None or point.excavation_id != finding.excavation_id:
+        raise AppError(400, "GNSS-точка должна принадлежать раскопу находки")
+    finding.gnss_point_id = point.id
+    apply_coordinates(finding, point.north, point.east, point.elev)

@@ -3,6 +3,7 @@ import { useRouter } from "./router.js";
 import { useSession } from "./session.js";
 import { useStatus } from "./status.js";
 import { allow } from "./labels.js";
+import { isDisconnected } from "../services/offlineCache.js";
 import { Modal } from "./ui.js";
 
 function Icon({ name }) {
@@ -24,6 +25,14 @@ export function Layout({ nav, children }) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [showTop, setShowTop] = useState(false);
+  const [offline, setOffline] = useState(!navigator.onLine || isDisconnected());
+  useEffect(() => {
+    const state = (event) => setOffline(event.detail.offline);
+    const lost = () => setOffline(true);
+    window.addEventListener("arch:connection", state);
+    window.addEventListener("offline", lost);
+    return () => { window.removeEventListener("arch:connection", state); window.removeEventListener("offline", lost); };
+  }, []);
   const [contrast, setContrast] = useState(() => document.documentElement.dataset.contrast === "1");
 
   useEffect(() => {
@@ -57,7 +66,7 @@ export function Layout({ nav, children }) {
             <span>Данные</span>
             <select value=${mode} onChange=${(event) => changeMode(event.target.value)} aria-label="Источник данных">
               <option value="live">Сервер</option>
-              <option value="mock">Локально</option>
+              <option value="mock">Демонстрация</option>
             </select>
           </label>
         </div>
@@ -73,6 +82,8 @@ export function Layout({ nav, children }) {
       </div>
     </div>
     <div className=${`status-line ${kind}`} role="status">${text}</div>
+    ${mode === "mock" ? html`<p className="container" role="status">Демонстрационные данные. Изменения не сохраняются на сервере; новые функции проверяйте в режиме «Сервер».</p>` : null}
+    ${offline ? html`<p className="container form-error" role="status">Нет связи. Показаны ранее загруженные данные (до 24 часов). Изменения требуют повторного сохранения после восстановления соединения.</p>` : null}
     <main className="container main">${children}</main>
     <footer className="site-footer">
       <div className="container footer-grid">

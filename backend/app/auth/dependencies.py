@@ -27,6 +27,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_error
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Учётная запись отключена")
+    db.info["actor"] = {"id": user.id, "role": user.role}
     return user
 
 

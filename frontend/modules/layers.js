@@ -75,7 +75,7 @@ export function LayersPage() {
         <${Field} label="Верхняя отметка"><input name="top_elev" type="number" step="0.001" required defaultValue=${editor.top_elev} /></${Field}>
         <${Field} label="Нижняя отметка"><input name="bottom_elev" type="number" step="0.001" required defaultValue=${editor.bottom_elev} /></${Field}>
         <${Field} label="Описание"><input name="description" defaultValue=${editor.description || ""} /></${Field}>
-        <${Field} label="Цвет"><input name="color" defaultValue=${editor.color || ""} /></${Field}>
+        <${Field} label="Цвет"><input name="color" type="color" defaultValue=${editor.color || "#8c3a2f"} /></${Field}>
         <${Field} label="Статус"><select name="status" defaultValue=${editor.status || "open"}>${Object.entries(LAYER_STATUS).map(([key, label]) => html`<option key=${key} value=${key}>${label}</option>`)}</select></${Field}>
         <${Field} label="Поверхность"><textarea name="surface_description" defaultValue=${editor.surface_description || ""}></textarea></${Field}>
         <${Field} label="Включения"><input name="inclusions" defaultValue=${editor.inclusions || ""} /></${Field}>

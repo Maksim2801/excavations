@@ -43,6 +43,7 @@ class UserUpdate(BaseModel):
     role: str | None = None
     is_active: bool | None = None
     password: str | None = Field(default=None, min_length=8, max_length=72)
+    excavation_ids: list[int] | None = None
 
 
 class ExcavationIn(BaseModel):
@@ -76,7 +77,7 @@ class LayerIn(BaseModel):
     top_elev: float
     bottom_elev: float
     description: str | None = None
-    color: str | None = None
+    color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     status: str | None = "open"
     surface_description: str | None = None
     inclusions: str | None = None
@@ -95,7 +96,7 @@ class LayerUpdate(BaseModel):
     top_elev: float | None = None
     bottom_elev: float | None = None
     description: str | None = None
-    color: str | None = None
+    color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     status: str | None = None
     surface_description: str | None = None
     inclusions: str | None = None
@@ -107,13 +108,15 @@ class FindingIn(BaseModel):
     excavation_id: int
     layer_id: int | None = None
     pt: int | None = None
-    code: str = Field(min_length=1, max_length=100)
-    number: int = Field(ge=1)
+    code: str | None = Field(default=None, min_length=1, max_length=100)
+    number: int | None = Field(default=None, ge=1)
     north: float | None = None
     east: float | None = None
     elev: float | None = None
     square: str | None = None
     description: str | None = None
+    full_desc: str | None = None
+    gnss_point_id: int | None = None
     material: str | None = None
     find_type: str | None = None
     quantity: int | None = Field(default=1, ge=1)
@@ -142,6 +145,8 @@ class FindingUpdate(BaseModel):
     elev: float | None = None
     square: str | None = None
     description: str | None = None
+    full_desc: str | None = None
+    gnss_point_id: int | None = None
     material: str | None = None
     find_type: str | None = None
     quantity: int | None = Field(default=None, ge=1)
@@ -221,6 +226,26 @@ class ReportIn(BaseModel):
     number_to: int | None = None
     elev_from: float | None = None
     elev_to: float | None = None
+    q: str | None = None
+    photo_present: bool | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    ids: list[int] | None = None
+    layout: Literal["working", "field", "collection", "album"] = "working"
+    collection_name: str | None = None
+    monument: str | None = None
+    excavation_author: str | None = None
+    source: str | None = None
+    dating: str | None = None
+    culture: str | None = None
+    report_note: str | None = None
+    inventory_no: str | None = None
+    inventory_date: str | None = None
+    approver_role: str | None = None
+    approver_name: str | None = None
+    place_time: str | None = None
+    bibliography: str | None = None
+    monument_summary: str | None = None
     columns: list[str] | None = None
     preset: Literal["minimal", "extended"] | None = None
     sort: str = "number"
@@ -245,7 +270,7 @@ class MaterialIn(BaseModel):
 class MaterialUpdate(BaseModel):
     name: str | None = None
     code: str | None = None
-    color: str | None = None
+    color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     is_active: bool | None = None
 
 

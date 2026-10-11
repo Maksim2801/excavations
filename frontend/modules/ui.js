@@ -2,7 +2,12 @@ import { html, useEffect, useState } from "./html.js";
 import { useRouter } from "./router.js";
 
 export function Field({ label, children }) {
-  return html`<label className="field"><span>${label}</span>${children}</label>`;
+  const labelId = globalThis.React.useId();
+  const controls = globalThis.React.Children.map(children, (child) =>
+    globalThis.React.isValidElement(child)
+      ? globalThis.React.cloneElement(child, { "aria-labelledby": labelId })
+      : child);
+  return html`<label className="field"><span id=${labelId}>${label}</span>${controls}</label>`;
 }
 
 export function SectionHeading({ children }) {

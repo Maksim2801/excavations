@@ -10,6 +10,8 @@ export function WorkspaceProvider({ children }) {
     const value = id ? String(id) : "";
     sessionStorage.setItem("excavationId", value);
     setExcavationState(value);
+    sessionStorage.removeItem("layerId");
+    setLayerState("");
   }, []);
 
   const setLayerId = useCallback((id) => {

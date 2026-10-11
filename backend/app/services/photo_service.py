@@ -50,7 +50,7 @@ def list_photos(
     layer_id: int | None = None,
     excavation_id: int | None = None,
 ) -> list[dict]:
-    query = db.query(Photo).order_by(Photo.created_at.desc())
+    query = db.query(Photo).order_by(Photo.photo_type.asc(), Photo.created_at.asc(), Photo.id.asc())
     if finding_id:
         query = query.filter(Photo.finding_id == finding_id)
     if layer_id:

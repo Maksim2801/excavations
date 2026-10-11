@@ -1,6 +1,6 @@
 import { html, useState } from "./html.js";
 import { useQuery } from "../hooks/useQuery.js";
-import { auditApi, dictionariesApi, usersApi } from "../services/api.js";
+import { auditApi, dictionariesApi, excavationsApi, usersApi } from "../services/api.js";
 import { useStatus } from "./status.js";
 import { ROLE_LABELS } from "./labels.js";
 import { Breadcrumbs, ErrorText, Field, Modal, SectionHeading } from "./ui.js";
@@ -68,6 +68,7 @@ export function DictionariesPage() {
 export function UsersPage() {
   const { setStatus } = useStatus();
   const users = useQuery(() => usersApi.list(), []);
+  const excavations = useQuery(() => excavationsApi.list(), []);
   const audit = useQuery(() => auditApi.list().catch(() => []), []);
   const [open, setOpen] = useState(false);
 
@@ -102,7 +103,7 @@ export function UsersPage() {
     </div>
     <${ErrorText} error=${users.error} />
     <div className="table-wrap"><table>
-      <thead><tr><th>Имя</th><th>Логин</th><th>Роль</th><th>Почта</th><th>Доступ</th></tr></thead>
+      <thead><tr><th>Имя</th><th>Логин</th><th>Роль</th><th>Почта</th><th>Назначенные раскопы</th><th>Доступ</th></tr></thead>
       <tbody>${(users.data || []).map((user) => html`<tr key=${user.id}>
         <td>${user.full_name}</td>
         <td>${user.username}</td>
@@ -110,6 +111,7 @@ export function UsersPage() {
           ${Object.entries(ROLE_LABELS).map(([key, label]) => html`<option key=${key} value=${key}>${label}</option>`)}
         </select></td>
         <td>${user.email || "—"}</td>
+        <td>${user.role === "field_archaeologist" ? html`<div className="stack">${(excavations.data || []).map((ex) => html`<label key=${ex.id}><input type="checkbox" checked=${user.excavation_ids?.includes(ex.id) || false} onChange=${(e) => update(user, { excavation_ids: e.target.checked ? [...(user.excavation_ids || []), ex.id] : (user.excavation_ids || []).filter((id) => id !== ex.id) })} /> ${ex.code} (${ex.year})</label>`)}</div>` : "Все раскопы"}</td>
         <td><button type="button" className="btn btn-text" onClick=${() => update(user, { is_active: !user.is_active })}>${user.is_active ? "Отключить" : "Включить"}</button></td>
       </tr>`)}</tbody>
     </table></div>

@@ -18,6 +18,8 @@ class Finding(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     excavation_id: Mapped[int] = mapped_column(ForeignKey("excavations.id", ondelete="RESTRICT"), index=True)
     layer_id: Mapped[int | None] = mapped_column(ForeignKey("layers.id", ondelete="RESTRICT"), nullable=True, index=True)
+    full_desc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gnss_point_id: Mapped[int | None] = mapped_column(ForeignKey("gnss_points.id", ondelete="SET NULL"), nullable=True, index=True)
     pt: Mapped[int | None] = mapped_column(Integer, nullable=True)
     code: Mapped[str] = mapped_column(String(100), index=True)
     number: Mapped[int] = mapped_column(Integer, index=True)

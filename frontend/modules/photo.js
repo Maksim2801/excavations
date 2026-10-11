@@ -99,11 +99,22 @@ export function PhotoPage({ findingId }) {
   const detect = async () => {
     if (!photo) return;
     try {
-      const detected = await photosApi.detectScale(photo.id);
-      if (detected.scale_points) {
-        setLines((current) => ({ ...current, scale: detected.scale_points }));
-        setMode("length");
-        setStatus(detected.message || "Маркер найден", "ok");
+      const detected = await photosApi.analyze(photo.id, Number(scaleMm) || 100);
+      const scale = detected.scale_points || detected.points || [];
+      const length = detected.length_points || [];
+      const width = detected.width_points || [];
+      if (scale.length === 2 || length.length === 2 || width.length === 2) {
+        setLines((current) => ({
+          ...current,
+          scale: scale.length === 2 ? scale : current.scale,
+          length: length.length === 2 ? length : current.length,
+          width: width.length === 2 ? width : current.width,
+        }));
+        setMode(length.length === 2 ? "length" : "scale");
+        if (detected.length_mm != null || detected.width_mm != null) {
+          setResult(`Предложено: длина ${detected.length_mm ?? "—"} мм, ширина ${detected.width_mm ?? "—"} мм. Проверьте линии и нажмите «Принять».`);
+        }
+        setStatus(detected.message || "Маркер найден", detected.status === "detected" ? "ok" : "warn");
       } else setStatus(detected.message || "Маркер не найден", "warn");
     } catch (error) {
       setStatus(error.message, "error");
@@ -157,10 +168,10 @@ export function PhotoPage({ findingId }) {
     }
   };
 
-  return html`<section>
+  return html`<section className="photo-page">
     <${Breadcrumbs} items=${[{ label: "Опись", href: "/inventory" }, { label: "Фотоанализ" }]} />
     <${SectionHeading}>Фотоанализ<//>
-    <div className="filter-bar">
+    <div className="filter-bar photo-filter-bar">
       <${Field} label="Находка"><select value=${activeId} onChange=${(event) => setSelectedId(event.target.value)}>
         ${(findings.data?.items || []).map((item) => html`<option key=${item.id} value=${item.id}>${item.code}-${item.number}</option>`)}
       </select></${Field}>
@@ -170,7 +181,7 @@ export function PhotoPage({ findingId }) {
       <${Field} label="Масштаб, мм"><input type="number" min="0.1" step="0.1" value=${scaleMm} onInput=${(event) => setScaleMm(event.target.value)} /></${Field}>
       <label className="btn btn-line file-button">Добавить фото<input type="file" accept="image/*" onChange=${upload} /></label>
     </div>
-    <div className="actions">
+    <div className="actions photo-actions">
       ${MODES.map(([key, label]) => html`<button type="button" key=${key} className=${mode === key ? "btn btn-gold" : "btn btn-line"} onClick=${() => setMode(key)}>${label}</button>`)}
       <button type="button" className="btn btn-line" onClick=${detect}>Распознать маркер</button>
       <button type="button" className="btn btn-gold" onClick=${accept}>Принять</button>
